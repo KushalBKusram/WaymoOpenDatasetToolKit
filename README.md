@@ -23,7 +23,8 @@ A set of functions to extract and visualize Waymo Open Dataset.
 Linux, Python, Waymo Open Dataset, OpenCV, Open3D
 
 ## Usage
-Repo consists [src/demo.py](src/demo.py) which has code to get you started once you have setup your environment with required libraries, gained access to Waymo data and bucket.
+Repo consists [src/extract.py](src/extract.py) to extract data and [src/visualize.py](src/visualize.py) to visualize camera and LiDAR data. 
+Make sure you have `gsutil` set up correctly on your machine before trying to retrieve data. 
 
 ## License
 Licensed under [GNU AGPL v3](https://github.com/KushalBKusram/WaymoDataToolkit/blob/master/LICENSE).
