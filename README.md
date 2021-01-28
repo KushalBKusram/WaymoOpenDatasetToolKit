@@ -1,26 +1,31 @@
-# WaymoDataToolkit v1.0
+# Waymo Open Dataset Toolkit
 
 ## Description
-A set of functions to extract raw data from tfrecord segment files stored in Waymo Google Cloud Bucket. 
+A set of functions to extract and visualize Waymo Open Dataset. 
 
-## Features of v1.0
+## Features
 - Extract images per frame per segment with corresponding labels
 - Extract images per camera with corresponding labels
-- Extracted images are stored as jpeg
+- Extracted images are stored as png
 - Extracted labels are in the format: object-class x y width height
-
-## Future updates
-- Visualize images as they are being extracted
-- Extract LiDAR data
+- Extract LiDAR data as point clouds with camera projections
 - Visualize LiDAR data
 
+## Screenshots
+
+### Camera Data
+![Camera Data](images\camera.png)
+
+### Point Cloud Data
+![Point Cloud Data](images\lidar.gif)
+
 ## Requirements
-Ubuntu 18.04, Python 3, Tensorflow, Numpy, Waymo Open Dataset
+Linux, Python, Waymo Open Dataset, OpenCV, Open3D
 
 ## Usage
 Repo consists [src/demo.py](src/demo.py) which has code to get you started once you have setup your environment with required libraries, gained access to Waymo data and bucket.
 
 ## License
-Licensed under [GNU AGPL v3](https://github.com/KushalBKusram/HoloNav/blob/master/LICENSE).
+Licensed under [GNU AGPL v3](https://github.com/KushalBKusram/WaymoDataToolkit/blob/master/LICENSE).
 
  

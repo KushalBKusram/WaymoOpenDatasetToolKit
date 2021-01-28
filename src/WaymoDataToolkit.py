@@ -1,6 +1,7 @@
 import os
 import cv2
 import math
+import pickle
 import subprocess
 import numpy as np
 import itertools
@@ -23,6 +24,9 @@ class WaymoDataToolkit:
 
   def __init__(self, url):
     self.url = url
+    self.range_images = None
+    self.camera_projections = None 
+    self.range_image_top_pose = None
   
   def process_frames(self, frame, camera_labels):
       # Iterate over the individual labels.
@@ -76,13 +80,22 @@ class WaymoDataToolkit:
       self.side_right = self.decodedImage
       self.side_right_labels = self.labels
 
-  def write_data(self, labels, image, camera_name):
-    f = open('../data/train/labels/{}_{}.txt'.format(self.count, camera_name), 'w')
+  def write_camera_data(self, labels, image, camera_name):
+    f = open('../data/camera/labels/{}_{}.txt'.format(self.count, camera_name), 'w')
     for tuple in labels:
       line = ' '.join(str(x) for x in tuple)
       f.write(line + '\n')
     f.close()
-    cv2.imwrite('../data/train/images/{}_{}.png'.format(self.count, camera_name), image)
+    cv2.imwrite('../data/camera/images/{}_{}.png'.format(self.count, camera_name), image)
+  
+  def write_range_data(self, points, cp_points):
+    f_p = open("../data/range/{}_points.data".format(self.count), 'wb')
+    pickle.dump(points, f_p)
+    f_cp = open("../data/range/{}_cp_points.data".format(self.count), 'wb')
+    pickle.dump(cp_points, f_cp)
+  
+  def get_range_image(self, range_image, laser_name, return_index):
+    return range_image[laser_name][return_index]
   
   def dataExtractor(self):
 
@@ -94,7 +107,12 @@ class WaymoDataToolkit:
 
     # Convert to bytearray
     for frameIdx in range(self.totalFrames):
+      
       frame.ParseFromString(datasetAsList[frameIdx])
+      range_images, camera_projections, range_image_top_pose = frame_utils.parse_range_image_and_camera_projection(frame)
+      frame.lasers.sort(key=lambda laser: laser.name)
+      points, cp_points = frame_utils.convert_range_image_to_point_cloud(frame, range_images, camera_projections, range_image_top_pose)
+
       self.d = {"type_unknown": 0,
                 "type_vehicle": 0,
                 "type_pedestrian": 0,
@@ -109,12 +127,15 @@ class WaymoDataToolkit:
         self.extract_labels(image, frame)
         self.assign_camera_labels(image.name)
       
-      # Write data to folder
-      self.write_data(self.front_labels, self.front, 'FRONT')
-      self.write_data(self.front_left_labels, self.front_left, 'FRONT_LEFT')
-      self.write_data(self.front_right_labels, self.front_right, 'FRONT_RIGHT')
-      self.write_data(self.side_left_labels, self.side_left, 'SIDE_LEFT')
-      self.write_data(self.side_right_labels, self.side_right, 'SIDE_RIGHT')
+      # Write camera data to folder
+      self.write_camera_data(self.front_labels, self.front, 'FRONT')
+      self.write_camera_data(self.front_left_labels, self.front_left, 'FRONT_LEFT')
+      self.write_camera_data(self.front_right_labels, self.front_right, 'FRONT_RIGHT')
+      self.write_camera_data(self.side_left_labels, self.side_left, 'SIDE_LEFT')
+      self.write_camera_data(self.side_right_labels, self.side_right, 'SIDE_RIGHT')
+
+      # Write range data to folder
+      self.write_range_data(points, cp_points)
 
       self.count += 1
 
@@ -125,10 +146,6 @@ class WaymoDataToolkit:
       tempFile = '../data/{}'.format(filename) 
       FNULL = open(os.devnull, 'w')
       print('Retrieving {} and assigning as a dataset..'.format(filename))
-      x = subprocess.call([cmd, "cp", self.url, tempFile], stdout=FNULL, stderr=subprocess.STDOUT)
+      #x = subprocess.call([cmd, "cp", self.url, tempFile], stdout=FNULL, stderr=subprocess.STDOUT)
       self.dataset = tf.data.TFRecordDataset(tempFile, compression_type='')
       print('Assigned as a dataset')
-  
-
-
-
