@@ -8,13 +8,12 @@ if __name__ == "__main__":
     imageDir = "../data/camera/images"
     frameNum = 0
     camera_list = ['FRONT', 'FRONT_LEFT', 'FRONT_RIGHT', 'SIDE_LEFT', 'SIDE_RIGHT']
-    """
+    
     for camera in camera_list:
         img = cv2.imread("{}/{}_{}.png".format(imageDir, frameNum, camera), cv2.IMREAD_UNCHANGED)
         cv2.imshow("{}_{}".format(frameNum, camera), img)
     cv2.waitKey()
     cv2.destroyAllWindows()
-    """
 
     # visualize range data
 

@@ -9,7 +9,7 @@ A set of functions to extract and visualize Waymo Open Dataset.
 - Extracted images are stored as png
 - Extracted labels are in the format: object-class x y width height
 - Extract LiDAR data as point clouds with camera projections
-- Visualize LiDAR data
+- Visualize LiDAR data as point cloud
 
 ## Screenshots
 
