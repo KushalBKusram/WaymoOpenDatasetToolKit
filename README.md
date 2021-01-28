@@ -14,10 +14,10 @@ A set of functions to extract and visualize Waymo Open Dataset.
 ## Screenshots
 
 ### Camera Data
-![Camera Data](images\camera.png)
+![Camera Data](images/camera.png)
 
 ### Point Cloud Data
-![Point Cloud Data](images\lidar.gif)
+![Point Cloud Data](images/lidar.gif)
 
 ## Requirements
 Linux, Python, Waymo Open Dataset, OpenCV, Open3D
