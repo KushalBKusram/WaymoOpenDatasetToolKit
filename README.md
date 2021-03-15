@@ -26,7 +26,7 @@ A set of functions to extract and visualize Waymo Open Dataset.
 Linux, Python, Waymo Open Dataset, OpenCV, Open3D
 
 ## Usage
-Repo consists short code implemented in [src/main.py] to demo data extraction process, video creation, object count consolidation and [src/visualize.py](src/visualize.py) to visualize camera and LiDAR data. 
+Repo consists short code implemented in [src/main.py](src/main.py) to demo data extraction process, video creation, object count consolidation and [src/visualize.py](src/visualize.py) to visualize camera and LiDAR data. 
 Make sure you have `gsutil` set up correctly on your machine before trying to retrieve data. 
 
 ## License
