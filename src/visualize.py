@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
     # visualize range data
 
-    laserDir = "{}/laser".format(saveDir)
+    laserDir = "{}/laser/images".format(saveDir)
     points = pickle.load(open("{}/{}_points.data".format(laserDir, frameNum), "rb"))
     cp_points = pickle.load(open("{}/{}_cp_points.data".format(laserDir, frameNum), "rb"))
 
