@@ -1,33 +1,23 @@
 # Waymo Open Dataset Toolkit
 
 ## Description
-A set of functions to extract and visualize Waymo Open Dataset. 
 
-## Features
-- Extract images per frame per segment with corresponding labels
-- Extract images per camera with corresponding labels
-- Extracted images are stored as png
-- Extracted labels are in the format: object-class x y width height
-- Extract LiDAR data as point clouds with camera projections
-- Visualize LiDAR data as point cloud
 
-## Screenshots
+## Getting Started
 
-### Camera Data
-![Camera Data](images/camera.png)
+To get started with Waymo Open Dataset, ensure you have gained access to the dataset using your Google account. Proceed only after you are able to view the dataset on the Google Cloud Console [here](https://console.cloud.google.com/storage/browser/waymo_open_dataset_v_2_0_0).
 
-### Video
-![Video](images/camera.gif)
+## Install Gcloud
+- Follow the instructions on this [page](https://cloud.google.com/sdk/docs/install) to install the gcloud CLI.
+- Authenticate with your account via the CLI by following this [link](https://cloud.google.com/docs/authentication/provide-credentials-adc#local-dev). This ultimately should create a credentials file and stored on your development machine. These credentials will be utilized by the script to download the data.
 
-### Point Cloud Data
-![Point Cloud Data](images/lidar.gif)
+## Download Data
+- Assuming you have authenticated, creadentials are generated and accessible across applications on your development machine; run the following script:
+`./scripts/download_data.sh <source-blob> <destination-folder> <-m : for parallelization>`. 
+- For example, if you wish to download just `camera_image` then the command looks like this: `./scripts/download_data.sh waymo_open_dataset_v_2_0_0/training/camera_image /mnt/e/WaymoOpenDatasetV2/training/camera_image -m`
+- If you wish to download the entire dataset then it is roughly `2.29TB`. You may query with `gsutil du -s -ah gs://waymo_open_dataset_v_2_0_0` if there has been any change to the dataset.
 
-## Requirements
-Linux, Python, Waymo Open Dataset, OpenCV, Open3D
-
-## Usage
-Repo consists short code implemented in [src/main.py](src/main.py) to demo data extraction process, video creation, object count consolidation and [src/visualize.py](src/visualize.py) to visualize camera and LiDAR data. 
-Make sure you have `gsutil` set up correctly on your machine before trying to retrieve data. 
+## Analyze Data
 
 ## License
 Licensed under [GNU AGPL v3](https://github.com/KushalBKusram/WaymoDataToolkit/blob/master/LICENSE).
