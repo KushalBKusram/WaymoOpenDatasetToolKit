@@ -1,4 +1,1 @@
-numpy
-opencv-python
-tensorflow
-open3d
+google-cloud-storage
