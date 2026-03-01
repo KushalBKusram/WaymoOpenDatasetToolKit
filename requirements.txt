@@ -1,13 +1,17 @@
-# Waymo Open Dataset v2 (Parquet-based API)
-# Pre-built wheels are Linux/Python 3.10 only.
-# macOS: build from source — see https://github.com/waymo-research/waymo-open-dataset/blob/master/docs/quick_start.md
-waymo-open-dataset-tf-2-12-0
+# Waymo Open Dataset v2 — Python dependencies
+#
+# The official `waymo-open-dataset-tf-*` package has Linux-only wheels and
+# cannot be installed on macOS. We access v2 Parquet files directly with
+# pandas/pyarrow/dask, so the waymo package is NOT required.
+#
+# TensorFlow IS still required for:
+#   - tf.io.gfile.glob  → GCS file listing with ADC credentials
+#   - tf.io.decode_raw  → range-image tensor decoding
+# On Apple Silicon: `pip install tensorflow` auto-selects the Metal build.
 
-# TensorFlow — used for tf.io.gfile GCS access and range-image decoding.
-# On Apple Silicon install via: pip install tensorflow tensorflow-metal
 tensorflow
 
-# Parquet + GCS streaming
+# Parquet + GCS streaming (no local download required)
 dask[dataframe]
 gcsfs
 google-cloud-storage
@@ -18,3 +22,8 @@ pyarrow
 opencv-python
 open3d
 numpy
+matplotlib
+
+# Notebook
+jupyter
+ipykernel

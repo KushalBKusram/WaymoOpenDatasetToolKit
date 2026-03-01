@@ -23,7 +23,7 @@ Prerequisite:
 import argparse
 import sys
 
-from modules.WaymoOpenDataset import ToolKit
+from modules.waymo_open_dataset import ToolKit
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,7 +77,10 @@ def main():
 
     # --segment: extract data
     if not args.segment:
-        print('Error: provide --segment <context_name> or --list.', file=sys.stderr)
+        print(
+            'Error: provide --segment <context_name> or --list.',
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     toolkit.assign_segment(args.segment)
@@ -98,7 +101,9 @@ def main():
         toolkit.extract_lidar_points()
         print('      Done.')
     else:
-        print('[3/3] Skipped LiDAR point cloud extraction (pass --all to enable).')
+        print(
+            '[3/3] Skipped LiDAR point cloud extraction (pass --all to enable).'
+        )
 
     print('\nAll done. Output written to:', args.save_dir)
 

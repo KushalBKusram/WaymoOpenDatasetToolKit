@@ -5,3 +5,4 @@
 /src/linux-venv
 /.idea/
 *.vsdx
+.venv/**/*
