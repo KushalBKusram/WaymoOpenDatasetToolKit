@@ -24,6 +24,9 @@ open3d
 numpy
 matplotlib
 
+# Training (optional — only needed for train.ipynb)
+ultralytics
+
 # Notebook
 jupyter
 ipykernel
