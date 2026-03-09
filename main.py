@@ -12,6 +12,10 @@ Usage examples:
   # Extract everything (camera, lidar labels, lidar point clouds)
   python main.py --segment 10023947602400723454_1120_000_1140_000 --all
 
+  # Export YOLO format (for YOLOX / Ultralytics training)
+  python main.py --segment 10023947602400723454_1120_000_1140_000 \\
+                 --yolo --yolo-dir ./yolo_dataset --yolo-split train
+
   # Use validation split and a custom output directory
   python main.py --split validation --save-dir /tmp/waymo_out \\
                  --segment 10023947602400723454_1120_000_1140_000
@@ -59,6 +63,23 @@ def parse_args() -> argparse.Namespace:
         action='store_true',
         help='Also extract LiDAR point clouds (slow; requires more memory)',
     )
+    p.add_argument(
+        '--yolo',
+        action='store_true',
+        help='Export YOLO format labels + JPEG images for YOLOX/Ultralytics training',
+    )
+    p.add_argument(
+        '--yolo-dir',
+        default='./yolo_dataset',
+        metavar='DIR',
+        help='Root of the YOLO dataset directory (default: ./yolo_dataset)',
+    )
+    p.add_argument(
+        '--yolo-split',
+        default='train',
+        choices=['train', 'val', 'test'],
+        help='YOLO dataset split subfolder (default: train)',
+    )
     return p.parse_args()
 
 
@@ -104,6 +125,14 @@ def main():
         print(
             '[3/3] Skipped LiDAR point cloud extraction (pass --all to enable).'
         )
+
+    if args.yolo:
+        print(f'\n[YOLO] Exporting YOLO format → {args.yolo_dir} (split={args.yolo_split}) ...')
+        toolkit.export_yolo(
+            output_dir=args.yolo_dir,
+            yolo_split=args.yolo_split,
+        )
+        print('       Done.  dataset.yaml written to', args.yolo_dir)
 
     print('\nAll done. Output written to:', args.save_dir)
 

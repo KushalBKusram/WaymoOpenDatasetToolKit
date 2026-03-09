@@ -68,6 +68,15 @@ LABEL_TYPES = {
     4: 'TYPE_CYCLIST',
 }
 
+# YOLO class mapping — TYPE_UNKNOWN excluded (no label written for those boxes)
+YOLO_CLASS_MAP = {
+    1: 0,   # TYPE_VEHICLE    → 0
+    2: 1,   # TYPE_PEDESTRIAN → 1
+    4: 2,   # TYPE_CYCLIST    → 2
+    3: 3,   # TYPE_SIGN       → 3
+}
+YOLO_CLASS_NAMES = ['vehicle', 'pedestrian', 'cyclist', 'sign']
+
 
 # ---------------------------------------------------------------------------
 # ToolKit
@@ -355,6 +364,107 @@ class ToolKit:
                 points_per_laser.append(pts)
             with open(f'{self.lidar_points_dir}/{ts}.pkl', 'wb') as f:
                 pickle.dump(points_per_laser, f)
+
+    def export_yolo(
+        self,
+        output_dir: str,
+        yolo_split: str = 'train',
+        cameras: tuple[int, ...] = (1, 2, 3, 4, 5),
+    ):
+        """Export the segment in YOLO format for camera-based 2-D detection.
+
+        Output layout (compatible with Ultralytics / YOLOX):
+            <output_dir>/
+              images/<yolo_split>/<context>_<ts>_<cam>.jpg
+              labels/<yolo_split>/<context>_<ts>_<cam>.txt
+              dataset.yaml                 ← written once; append-safe
+
+        Label format (one line per box, values normalised 0–1):
+            <class_id> <cx> <cy> <w> <h>
+
+        Class mapping (TYPE_UNKNOWN is excluded):
+            0 → vehicle
+            1 → pedestrian
+            2 → cyclist
+            3 → sign
+
+        Args:
+            output_dir:  Root of the YOLO dataset on disk.
+            yolo_split:  Subfolder name — 'train', 'val', or 'test'.
+            cameras:     Camera IDs to export (default: all 5).
+        """
+        self._assert_segment()
+
+        img_out_dir = os.path.join(output_dir, 'images', yolo_split)
+        lbl_out_dir = os.path.join(output_dir, 'labels', yolo_split)
+        os.makedirs(img_out_dir, exist_ok=True)
+        os.makedirs(lbl_out_dir, exist_ok=True)
+
+        cam_image_df = self._read_cached('camera_image')
+        cam_box_df   = self._read_cached('camera_box')
+
+        for _, img_row in cam_image_df.iterrows():
+            cam_name_int = img_row['key.camera_name']
+            if cam_name_int not in cameras:
+                continue
+
+            ts       = img_row['key.frame_timestamp_micros']
+            cam_name = CAMERA_NAMES.get(cam_name_int, 'UNKNOWN')
+            stem     = f'{self.context_name}_{ts}_{cam_name}'
+
+            # Decode image and get dimensions
+            jpeg = img_row[f'{_C_IMG}.image']
+            img  = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8),
+                                cv2.IMREAD_COLOR)
+            h, w = img.shape[:2]
+
+            # Save as JPEG (smaller than PNG; standard for YOLO datasets)
+            cv2.imwrite(os.path.join(img_out_dir, f'{stem}.jpg'), img,
+                        [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+            # Write normalised label file
+            mask = (
+                (cam_box_df['key.frame_timestamp_micros'] == ts) &
+                (cam_box_df['key.camera_name']            == cam_name_int)
+            )
+            boxes = cam_box_df[mask]
+
+            with open(os.path.join(lbl_out_dir, f'{stem}.txt'), 'w') as f:
+                for _, box_row in boxes.iterrows():
+                    type_int = int(box_row[f'{_C_BOX}.type'])
+                    if type_int not in YOLO_CLASS_MAP:
+                        continue           # skip TYPE_UNKNOWN
+
+                    cx = float(box_row[f'{_C_BOX}.box.center.x'])
+                    cy = float(box_row[f'{_C_BOX}.box.center.y'])
+                    bw = float(box_row[f'{_C_BOX}.box.size.x'])
+                    bh = float(box_row[f'{_C_BOX}.box.size.y'])
+
+                    # Normalise to [0, 1]
+                    cx_n = cx / w
+                    cy_n = cy / h
+                    bw_n = bw / w
+                    bh_n = bh / h
+
+                    # Clamp to guard against boxes that slightly overflow
+                    cx_n = min(max(cx_n, 0.0), 1.0)
+                    cy_n = min(max(cy_n, 0.0), 1.0)
+                    bw_n = min(bw_n, 1.0)
+                    bh_n = min(bh_n, 1.0)
+
+                    cls = YOLO_CLASS_MAP[type_int]
+                    f.write(f'{cls} {cx_n:.6f} {cy_n:.6f} {bw_n:.6f} {bh_n:.6f}\n')
+
+        # Write / update dataset.yaml (idempotent — safe to call per segment)
+        yaml_path = os.path.join(output_dir, 'dataset.yaml')
+        if not os.path.exists(yaml_path):
+            with open(yaml_path, 'w') as f:
+                f.write(f'path: {os.path.abspath(output_dir)}\n')
+                f.write(f'train: images/train\n')
+                f.write(f'val:   images/val\n')
+                f.write(f'test:  images/test\n\n')
+                f.write(f'nc: {len(YOLO_CLASS_NAMES)}\n')
+                f.write(f'names: {YOLO_CLASS_NAMES}\n')
 
     # -----------------------------------------------------------------------
     # Range-image -> point-cloud conversion
