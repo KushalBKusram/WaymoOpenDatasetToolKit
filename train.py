@@ -184,6 +184,8 @@ class ProgressTracker:
 def train(args):
     try:
         from ultralytics import YOLO
+        from ultralytics.cfg import get_cfg
+        from ultralytics.utils import DEFAULT_CFG
         from ultralytics.utils.loss import v8DetectionLoss
     except ImportError:
         print(
@@ -213,6 +215,11 @@ def train(args):
     yolo = YOLO(weights)
     nn_model = yolo.model.to(device)
     nn_model.train()
+
+    # v8DetectionLoss reads model.args as an IterableSimpleNamespace.
+    # When loaded outside the Ultralytics training loop, args may be a plain
+    # dict — replace it with the default cfg namespace to fix attribute access.
+    nn_model.args = get_cfg(DEFAULT_CFG)
 
     loss_fn = v8DetectionLoss(nn_model)
     optimizer = torch.optim.AdamW(
