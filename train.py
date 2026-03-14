@@ -239,8 +239,11 @@ def train(args):
     if not tracker.pending:
         print('\nFetching segment list from GCS ...')
         all_segs = toolkit.list_segments()
-        tracker.initialise(all_segs[:args.total_segs])
-        print(f'{len(tracker.pending)} segments queued.')
+        tracker.initialise(
+            all_segs if args.total_segs is None else all_segs[:args.total_segs]
+        )
+        print(f'{len(tracker.pending)} segments queued '
+              f'({"all" if args.total_segs is None else args.total_segs} requested).')
 
     print(
         f'\n{len(tracker.trained)} done, '
@@ -330,9 +333,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         '--total-segs',
         type=int,
-        default=20,
+        default=None,
         metavar='N',
-        help='Total number of training segments to use (default: 20)',
+        help='Number of training segments to use (default: all)',
     )
     p.add_argument(
         '--epochs-per-seg',
