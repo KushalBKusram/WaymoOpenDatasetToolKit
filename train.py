@@ -1,82 +1,336 @@
 """
-train.py — Export Waymo YOLO dataset and train a YOLOv8 model.
+train.py — Train YOLOv8 on Waymo data streamed directly from GCS.
+
+Images are read from GCS Parquet files into memory — no disk export required.
+A JSON progress file tracks which segments are done so training resumes
+cleanly after a Colab disconnect. Checkpoints are saved to Google Drive.
 
 Usage examples:
 
-  # Export 5 train + 2 val segments, then train yolov8n for 50 epochs
-  python train.py --export
+  # Train on 20 segments, save artefacts to Drive
+  python train.py --drive-dir /content/drive/MyDrive/waymo
 
-  # Skip export (dataset already on disk), train with a larger model
-  python train.py --model m --epochs 100
+  # Larger model, more epochs per segment
+  python train.py --drive-dir /content/drive/MyDrive/waymo --model s --epochs-per-seg 3
 
-  # Custom dataset and output directories
-  python train.py --export --yolo-dir /content/yolo_dataset \\
-                  --project-dir /content/drive/MyDrive/waymo/runs
+  # Resume (auto-detects latest.pt and progress.json on Drive)
+  python train.py --drive-dir /content/drive/MyDrive/waymo
 
-  # Export only, no training
-  python train.py --export --no-train
+  # Custom weights to start from
+  python train.py --drive-dir /content/drive/MyDrive/waymo \\
+                  --weights /content/drive/MyDrive/waymo/checkpoints/latest.pt
 
 Prerequisite:
   pip install ultralytics
-  gcloud auth application-default login   # or google.colab.auth on Colab
+  # On Colab:
+  #   from google.colab import auth; auth.authenticate_user()
+  #   from google.colab import drive; drive.mount('/content/drive')
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+from modules.waymo_open_dataset import (
+    YOLO_CLASS_MAP, YOLO_CLASS_NAMES, ToolKit, _C_BOX,
+)
+
+
+# ── Dataset ───────────────────────────────────────────────────────────────
+
+
+class WaymoGCSDataset(Dataset):
+    """Streams camera images + 2-D box labels from one GCS Parquet segment.
+
+    No files are written to disk. Each __getitem__ decodes a JPEG stored
+    as bytes in the Parquet column directly into a float32 tensor.
+
+    Args:
+        toolkit:  Initialised ToolKit instance with a segment assigned.
+        imgsz:    Square image size to resize to (default: 640).
+        cameras:  Camera IDs to include (default: all 5).
+    """
+
+    def __init__(
+        self,
+        toolkit: ToolKit,
+        imgsz: int = 640,
+        cameras: tuple = (1, 2, 3, 4, 5),
+    ):
+        self.toolkit = toolkit
+        self.imgsz = imgsz
+
+        cam_df = toolkit._read_cached('camera_image')
+        self.index = [
+            (row['key.frame_timestamp_micros'], row['key.camera_name'])
+            for _, row in cam_df.iterrows()
+            if row['key.camera_name'] in cameras
+        ]
+
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def __getitem__(self, i: int):
+        ts, cam = self.index[i]
+
+        img = self.toolkit.load_camera_frame(ts, cam)   # H x W x 3 BGR
+        h0, w0 = img.shape[:2]
+
+        img = cv2.resize(img, (self.imgsz, self.imgsz))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+
+        boxes_df = self.toolkit.load_camera_boxes(ts, cam)
+        labels = []
+        for _, row in boxes_df.iterrows():
+            type_int = int(row[f'{_C_BOX}.type'])
+            if type_int not in YOLO_CLASS_MAP:
+                continue
+            cx = float(row[f'{_C_BOX}.box.center.x']) / w0
+            cy = float(row[f'{_C_BOX}.box.center.y']) / h0
+            bw = float(row[f'{_C_BOX}.box.size.x']) / w0
+            bh = float(row[f'{_C_BOX}.box.size.y']) / h0
+            labels.append([
+                YOLO_CLASS_MAP[type_int],
+                min(max(cx, 0.0), 1.0),
+                min(max(cy, 0.0), 1.0),
+                min(bw, 1.0),
+                min(bh, 1.0),
+            ])
+
+        labels = (
+            torch.tensor(labels, dtype=torch.float32)
+            if labels
+            else torch.zeros((0, 5), dtype=torch.float32)
+        )
+        return img, labels
+
+
+def collate_fn(batch):
+    """Collate into the dict format expected by v8DetectionLoss."""
+    imgs, labels_list = zip(*batch)
+    imgs = torch.stack(imgs)   # (B, 3, H, W)
+
+    cls_all, bboxes_all, bidx_all = [], [], []
+    for i, lbl in enumerate(labels_list):
+        if len(lbl):
+            cls_all.append(lbl[:, 0])
+            bboxes_all.append(lbl[:, 1:])
+            bidx_all.append(torch.full((len(lbl),), float(i)))
+
+    return {
+        'img':       imgs,
+        'cls':       torch.cat(cls_all)    if cls_all    else torch.zeros(0),
+        'bboxes':    torch.cat(bboxes_all) if bboxes_all else torch.zeros((0, 4)),
+        'batch_idx': torch.cat(bidx_all)   if bidx_all   else torch.zeros(0),
+    }
+
+
+# ── Progress tracker ──────────────────────────────────────────────────────
+
+
+class ProgressTracker:
+    """JSON file that records trained and pending segment names.
+
+    Stored on Drive so it survives Colab session restarts.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        if path.exists():
+            data = json.loads(path.read_text())
+            self.trained = data.get('trained', [])
+            self.pending = data.get('pending', [])
+        else:
+            self.trained = []
+            self.pending = []
+
+    def initialise(self, all_segments: list):
+        """Populate pending from all_segments, skipping already trained."""
+        done = set(self.trained)
+        self.pending = [s for s in all_segments if s not in done]
+        self._write()
+
+    def mark_done(self, seg: str):
+        if seg in self.pending:
+            self.pending.remove(seg)
+        if seg not in self.trained:
+            self.trained.append(seg)
+        self._write()
+        print(
+            f'Progress: {len(self.trained)} done, '
+            f'{len(self.pending)} pending  [{self.path}]'
+        )
+
+    def _write(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(
+                {'trained': self.trained, 'pending': self.pending},
+                indent=2,
+            )
+        )
+
+
+# ── Training ──────────────────────────────────────────────────────────────
+
+
+def train(args):
+    try:
+        from ultralytics import YOLO
+        from ultralytics.utils.loss import v8DetectionLoss
+    except ImportError:
+        print(
+            'Error: ultralytics not installed. Run: pip install ultralytics',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Device        : {device}')
+
+    drive_dir = Path(args.drive_dir)
+    ckpt_dir = drive_dir / 'checkpoints'
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    progress_file = drive_dir / 'progress.json'
+
+    # ── Load model ────────────────────────────────────────────────────────
+    latest_ckpt = ckpt_dir / 'latest.pt'
+    if args.weights:
+        weights = args.weights
+    elif latest_ckpt.exists():
+        weights = str(latest_ckpt)
+        print(f'Resuming from : {weights}')
+    else:
+        weights = f'yolov8{args.model}.pt'
+
+    yolo = YOLO(weights)
+    nn_model = yolo.model.to(device)
+    nn_model.train()
+
+    loss_fn = v8DetectionLoss(nn_model)
+    optimizer = torch.optim.AdamW(
+        nn_model.parameters(), lr=args.lr, weight_decay=1e-4
+    )
+
+    print(f'Model         : {weights}')
+    print(f'Epochs/seg    : {args.epochs_per_seg}')
+    print(f'Batch         : {args.batch}')
+    print(f'Save every    : {args.save_every} segments')
+    print(f'Drive dir     : {drive_dir}')
+
+    # ── Progress ──────────────────────────────────────────────────────────
+    tracker = ProgressTracker(progress_file)
+    toolkit = ToolKit(split='training')
+
+    if not tracker.pending:
+        print('\nFetching segment list from GCS ...')
+        all_segs = toolkit.list_segments()
+        tracker.initialise(all_segs[:args.total_segs])
+        print(f'{len(tracker.pending)} segments queued.')
+
+    print(
+        f'\n{len(tracker.trained)} done, '
+        f'{len(tracker.pending)} remaining.\n'
+    )
+
+    # ── Segment loop ──────────────────────────────────────────────────────
+    for seg in list(tracker.pending):
+        total = len(tracker.trained) + len(tracker.pending)
+        seg_num = len(tracker.trained) + 1
+        print(f'\n── Segment [{seg_num}/{total}] ──────────────────────────')
+        print(f'   {seg[:72]}')
+
+        toolkit.assign_segment(seg)
+        dataset = WaymoGCSDataset(toolkit, imgsz=args.img_size)
+        loader = DataLoader(
+            dataset,
+            batch_size=args.batch,
+            shuffle=True,
+            collate_fn=collate_fn,
+            num_workers=0,
+            pin_memory=(device.type == 'cuda'),
+        )
+        print(f'   {len(dataset)} samples  ({len(loader)} batches)')
+
+        # ── Epoch loop ────────────────────────────────────────────────────
+        for epoch in range(1, args.epochs_per_seg + 1):
+            total_loss = 0.0
+            for batch in loader:
+                batch = {
+                    k: v.to(device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+                preds = nn_model(batch['img'])
+                loss, _ = loss_fn(preds, batch)
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(nn_model.parameters(), 10.0)
+                optimizer.step()
+                total_loss += loss.item()
+
+            avg = total_loss / max(len(loader), 1)
+            print(f'   epoch {epoch}/{args.epochs_per_seg}  loss={avg:.4f}')
+
+        tracker.mark_done(seg)
+
+        # ── Save checkpoint ───────────────────────────────────────────────
+        if seg_num % args.save_every == 0 or not tracker.pending:
+            ckpt_path = ckpt_dir / f'seg_{seg_num:04d}.pt'
+            torch.save(nn_model.state_dict(), ckpt_path)
+            torch.save(nn_model.state_dict(), latest_ckpt)
+            print(f'   Checkpoint → {ckpt_path}')
+
+    print(f'\nTraining complete.  Latest weights: {latest_ckpt}')
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description='Waymo YOLOv8 training pipeline',
+        description='Train YOLOv8 on Waymo data streamed from GCS',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-
-    # ── Export flags ──────────────────────────────────────────────────────
     p.add_argument(
-        '--export',
-        action='store_true',
-        help='Stream segments from GCS and export YOLO dataset to --yolo-dir',
-    )
-    p.add_argument(
-        '--yolo-dir',
-        default='./yolo_dataset',
+        '--drive-dir',
+        default='./runs/waymo',
         metavar='DIR',
-        help='Root of the YOLO dataset directory (default: ./yolo_dataset)',
-    )
-    p.add_argument(
-        '--train-segs',
-        type=int,
-        default=5,
-        metavar='N',
-        help='Number of training segments to export (default: 5)',
-    )
-    p.add_argument(
-        '--val-segs',
-        type=int,
-        default=2,
-        metavar='N',
-        help='Number of validation segments to export (default: 2)',
-    )
-
-    # ── Training flags ────────────────────────────────────────────────────
-    p.add_argument(
-        '--no-train',
-        action='store_true',
-        help='Skip training (export only)',
+        help='Drive directory for checkpoints + progress.json '
+             '(default: ./runs/waymo)',
     )
     p.add_argument(
         '--model',
         default='n',
         choices=['n', 's', 'm', 'l', 'x'],
-        help='YOLOv8 model size (default: n)',
+        help='YOLOv8 model size to start from (default: n)',
     )
     p.add_argument(
-        '--epochs',
+        '--weights',
+        default=None,
+        metavar='PATH',
+        help='Explicit checkpoint to load (overrides auto-resume)',
+    )
+    p.add_argument(
+        '--total-segs',
         type=int,
-        default=50,
-        help='Number of training epochs (default: 50)',
+        default=20,
+        metavar='N',
+        help='Total number of training segments to use (default: 20)',
+    )
+    p.add_argument(
+        '--epochs-per-seg',
+        type=int,
+        default=2,
+        metavar='N',
+        help='Epochs to train on each segment (default: 2)',
     )
     p.add_argument(
         '--img-size',
@@ -87,115 +341,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         '--batch',
         type=int,
-        default=16,
-        help='Batch size (default: 16)',
+        default=8,
+        help='Batch size (default: 8)',
     )
     p.add_argument(
-        '--project-dir',
-        default='./runs/waymo',
-        metavar='DIR',
-        help='Directory for training artefacts (default: ./runs/waymo)',
+        '--lr',
+        type=float,
+        default=1e-4,
+        help='Learning rate (default: 1e-4)',
     )
     p.add_argument(
-        '--run-name',
-        default=None,
-        metavar='NAME',
-        help='Training run name (default: yolov8<model>_waymo)',
+        '--save-every',
+        type=int,
+        default=5,
+        metavar='N',
+        help='Save checkpoint every N segments (default: 5)',
     )
-    p.add_argument(
-        '--weights',
-        default=None,
-        metavar='PATH',
-        help='Resume from checkpoint (default: pretrained yolov8<model>.pt)',
-    )
-
     return p.parse_args()
 
 
-def export(args):
-    from modules.waymo_open_dataset import ToolKit
-
-    yolo_dir = args.yolo_dir
-
-    print(f'Exporting {args.train_segs} training segment(s) → {yolo_dir}')
-    toolkit = ToolKit(split='training')
-    segments = toolkit.list_segments()
-    for i, seg in enumerate(segments[:args.train_segs]):
-        print(f'  [{i+1}/{args.train_segs}] {seg[:60]}', end=' ... ', flush=True)
-        toolkit.assign_segment(seg)
-        toolkit.export_yolo(output_dir=yolo_dir, yolo_split='train')
-        print('done')
-
-    print(f'\nExporting {args.val_segs} validation segment(s) → {yolo_dir}')
-    toolkit_val = ToolKit(split='validation')
-    val_segments = toolkit_val.list_segments()
-    for i, seg in enumerate(val_segments[:args.val_segs]):
-        print(f'  [{i+1}/{args.val_segs}] {seg[:60]}', end=' ... ', flush=True)
-        toolkit_val.assign_segment(seg)
-        toolkit_val.export_yolo(output_dir=yolo_dir, yolo_split='val')
-        print('done')
-
-    print('\nExport complete.')
-
-
-def train(args):
-    try:
-        from ultralytics import YOLO
-    except ImportError:
-        print(
-            'Error: ultralytics not installed. Run: pip install ultralytics',
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    yaml_path = Path(args.yolo_dir) / 'dataset.yaml'
-    if not yaml_path.exists():
-        print(
-            f'Error: dataset.yaml not found at {yaml_path}. '
-            'Run with --export first.',
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    weights = args.weights or f'yolov8{args.model}.pt'
-    run_name = args.run_name or f'yolov8{args.model}_waymo'
-
-    print(f'\nTraining  : {weights}')
-    print(f'Data      : {yaml_path}')
-    print(f'Epochs    : {args.epochs}')
-    print(f'Batch     : {args.batch}')
-    print(f'Image size: {args.img_size}')
-    print(f'Output    : {args.project_dir}/{run_name}')
-
-    model = YOLO(weights)
-    model.train(
-        data=str(yaml_path),
-        epochs=args.epochs,
-        imgsz=args.img_size,
-        batch=args.batch,
-        project=args.project_dir,
-        name=run_name,
-        exist_ok=True,
-        verbose=True,
-    )
-
-    best = Path(args.project_dir) / run_name / 'weights' / 'best.pt'
-    print(f'\nTraining complete. Best weights: {best}')
-
-
-def main():
-    args = parse_args()
-
-    if not args.export and args.no_train:
-        print('Nothing to do: pass --export, --no-train, or both.', file=sys.stderr)
-        sys.exit(1)
-
-    if args.export:
-        export(args)
-
-    if not args.no_train:
-        train(args)
-
-
 if __name__ == '__main__':
-    main()
+    train(parse_args())
