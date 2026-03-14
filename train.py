@@ -276,6 +276,8 @@ def train(args):
                 }
                 preds = nn_model(batch['img'])
                 loss, _ = loss_fn(preds, batch)
+                if loss.grad_fn is None:
+                    continue   # no positive targets in batch; skip update
                 optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(nn_model.parameters(), 10.0)
