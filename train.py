@@ -7,7 +7,7 @@ cleanly after a Colab disconnect. Checkpoints are saved to Google Drive.
 
 Usage examples:
 
-  # Train on 20 segments, save artefacts to Drive
+  # Train on all segments, save artefacts to Drive
   python train.py --drive-dir /content/drive/MyDrive/waymo
 
   # Larger model, more epochs per segment
@@ -28,6 +28,7 @@ Prerequisite:
 """
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -66,12 +67,25 @@ class WaymoGCSDataset(Dataset):
         self.toolkit = toolkit
         self.imgsz = imgsz
 
+        # Pre-cache both components up front to avoid per-item GCS round trips
         cam_df = toolkit._read_cached('camera_image')
+        self.box_df = toolkit._read_cached('camera_box')
+
         self.index = [
             (row['key.frame_timestamp_micros'], row['key.camera_name'])
             for _, row in cam_df.iterrows()
             if row['key.camera_name'] in cameras
         ]
+
+        # Diagnostic: report label coverage for this segment
+        labeled = sum(
+            1 for ts, cam in self.index
+            if len(self.box_df[
+                (self.box_df['key.frame_timestamp_micros'] == ts) &
+                (self.box_df['key.camera_name'] == cam)
+            ]) > 0
+        )
+        print(f'   label coverage: {labeled}/{len(self.index)} frames have boxes')
 
     def __len__(self) -> int:
         return len(self.index)
@@ -86,7 +100,11 @@ class WaymoGCSDataset(Dataset):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
 
-        boxes_df = self.toolkit.load_camera_boxes(ts, cam)
+        # Use pre-cached box_df instead of calling load_camera_boxes()
+        boxes_df = self.box_df[
+            (self.box_df['key.frame_timestamp_micros'] == ts) &
+            (self.box_df['key.camera_name'] == cam)
+        ]
         labels = []
         for _, row in boxes_df.iterrows():
             type_int = int(row[f'{_C_BOX}.type'])
@@ -130,6 +148,38 @@ def collate_fn(batch):
         'bboxes':    torch.cat(bboxes_all) if bboxes_all else torch.zeros((0, 4)),
         'batch_idx': torch.cat(bidx_all)   if bidx_all   else torch.zeros(0),
     }
+
+
+# ── Checkpoint helpers ────────────────────────────────────────────────────
+
+
+def save_checkpoint(nn_model, optimizer, seg_num, path):
+    """Save in a format that can be reloaded with both YOLO() and torch.load."""
+    torch.save(
+        {
+            'model': copy.deepcopy(nn_model),
+            'optimizer': optimizer.state_dict(),
+            'seg': seg_num,
+        },
+        path,
+    )
+
+
+def load_nn_model(weights, model_size, device, get_cfg, DEFAULT_CFG, YOLO):
+    """Load model weights; handles both Ultralytics .pt and our own checkpoints."""
+    path = Path(weights)
+    if path.exists():
+        ckpt = torch.load(weights, map_location=device, weights_only=False)
+        # Our saved checkpoints store the full nn.Module under 'model'
+        if isinstance(ckpt, dict) and isinstance(
+            ckpt.get('model'), torch.nn.Module
+        ):
+            nn_model = ckpt['model'].to(device)
+            print(f'Resumed from segment {ckpt.get("seg", "?")}')
+            return nn_model
+    # Fall back to Ultralytics loader (pretrained yolov8n.pt etc.)
+    yolo = YOLO(weights)
+    return yolo.model.to(device)
 
 
 # ── Progress tracker ──────────────────────────────────────────────────────
@@ -201,9 +251,9 @@ def train(args):
     ckpt_dir = drive_dir / 'checkpoints'
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     progress_file = drive_dir / 'progress.json'
+    latest_ckpt = ckpt_dir / 'latest.pt'
 
     # ── Load model ────────────────────────────────────────────────────────
-    latest_ckpt = ckpt_dir / 'latest.pt'
     if args.weights:
         weights = args.weights
     elif latest_ckpt.exists():
@@ -212,8 +262,9 @@ def train(args):
     else:
         weights = f'yolov8{args.model}.pt'
 
-    yolo = YOLO(weights)
-    nn_model = yolo.model.to(device)
+    nn_model = load_nn_model(
+        weights, args.model, device, get_cfg, DEFAULT_CFG, YOLO
+    )
     nn_model.train()
 
     # v8DetectionLoss reads model.args as an IterableSimpleNamespace.
@@ -272,6 +323,7 @@ def train(args):
         # ── Epoch loop ────────────────────────────────────────────────────
         for epoch in range(1, args.epochs_per_seg + 1):
             total_loss = 0.0
+            skipped = 0
             for batch in loader:
                 batch = {
                     k: v.to(device) if isinstance(v, torch.Tensor) else v
@@ -280,6 +332,7 @@ def train(args):
                 preds = nn_model(batch['img'])
                 loss, _ = loss_fn(preds, batch)
                 if loss.grad_fn is None:
+                    skipped += 1
                     continue   # no positive targets in batch; skip update
                 optimizer.zero_grad()
                 loss.backward()
@@ -287,16 +340,21 @@ def train(args):
                 optimizer.step()
                 total_loss += loss.item()
 
-            avg = total_loss / max(len(loader), 1)
-            print(f'   epoch {epoch}/{args.epochs_per_seg}  loss={avg:.4f}')
+            trained_batches = len(loader) - skipped
+            avg = total_loss / max(trained_batches, 1)
+            print(
+                f'   epoch {epoch}/{args.epochs_per_seg}  '
+                f'loss={avg:.4f}  '
+                f'({trained_batches}/{len(loader)} batches had labels)'
+            )
 
         tracker.mark_done(seg)
 
         # ── Save checkpoint ───────────────────────────────────────────────
         if seg_num % args.save_every == 0 or not tracker.pending:
             ckpt_path = ckpt_dir / f'seg_{seg_num:04d}.pt'
-            torch.save(nn_model.state_dict(), ckpt_path)
-            torch.save(nn_model.state_dict(), latest_ckpt)
+            save_checkpoint(nn_model, optimizer, seg_num, ckpt_path)
+            save_checkpoint(nn_model, optimizer, seg_num, latest_ckpt)
             print(f'   Checkpoint → {ckpt_path}')
 
     print(f'\nTraining complete.  Latest weights: {latest_ckpt}')
