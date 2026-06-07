@@ -531,20 +531,18 @@ class PointPillarsDetector(BaseDetector):
         # Heatmap focal loss
         loss_hm = _gaussian_focal_loss(preds['heatmap'], hm_gt)
 
-        # Box regression — only on positive positions
-        if mask.any():
-            loss_off = F.l1_loss(preds['offset'][mask.unsqueeze(1).expand_as(preds['offset'])],
-                                 off_gt[mask.unsqueeze(1).expand_as(off_gt)])
-            loss_z   = F.l1_loss(preds['z_center'][mask.unsqueeze(1).expand_as(preds['z_center'])],
-                                 z_gt[mask.unsqueeze(1).expand_as(z_gt)])
-            loss_dim = F.l1_loss(preds['log_dim'][mask.unsqueeze(1).expand_as(preds['log_dim'])],
-                                 dim_gt[mask.unsqueeze(1).expand_as(dim_gt)])
-            loss_hd  = F.l1_loss(preds['heading'][mask.unsqueeze(1).expand_as(preds['heading'])],
-                                  hd_gt[mask.unsqueeze(1).expand_as(hd_gt)])
-            return loss_hm + loss_off + loss_z + loss_dim + loss_hd
-        else:
-            # No positive GT in batch — only heatmap loss; still has grad_fn
-            return loss_hm
+        # Box regression — only on positive positions.
+        # Use element-wise multiplication instead of boolean indexing so the
+        # mask stays contiguous on CUDA (expand_as creates a non-contiguous
+        # view that can cause silent failures with advanced indexing on GPU).
+        n_pos = mask.sum().float().clamp(min=1)
+        pos   = mask.float().unsqueeze(1)   # (B, 1, H', W') — broadcastable
+
+        loss_off = ((preds['offset']   - off_gt).abs() * pos).sum() / n_pos
+        loss_z   = ((preds['z_center'] - z_gt  ).abs() * pos).sum() / n_pos
+        loss_dim = ((preds['log_dim']  - dim_gt).abs() * pos).sum() / n_pos
+        loss_hd  = ((preds['heading']  - hd_gt ).abs() * pos).sum() / n_pos
+        return loss_hm + loss_off + loss_z + loss_dim + loss_hd
 
     def predict(
         self,
