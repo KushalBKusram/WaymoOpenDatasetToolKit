@@ -1,0 +1,50 @@
+# PointPillars 3-D object detector — Colab T4-friendly defaults
+#
+# Detection range  : ±50 m XY, −3…3 m Z
+# Pillar size      : 0.25 m × 0.25 m  →  400×400 BEV
+# Max pillars      : 6 000  (keep densest)
+# Max pts/pillar   : 20
+# Classes          : vehicle (0), pedestrian (1), cyclist (2)
+#
+# Swap model.type for any registered PointPillars variant
+# (e.g. a custom backbone) — no changes to train.py required.
+
+name: pointpillars
+task: lidar_3d_detection
+
+model:
+  type: PointPillarsDetector
+  num_classes: 3
+  pfn_out: 64          # pillar feature dimension; 64 fits T4 fp16
+  class_names: [vehicle, pedestrian, cyclist]
+
+voxel:
+  x_range: [-50.0, 50.0]
+  y_range: [-50.0, 50.0]
+  z_range: [-3.0,   3.0]
+  voxel_size: [0.25, 0.25]   # metres per pillar; 400×400 BEV
+  max_pillars: 6000
+  max_points_per_pillar: 20
+
+data:
+  split: training
+  # LiDAR uses all 5 lasers automatically — no camera selection needed.
+
+train:
+  total_segs: 20            # null = all segments in the split
+  epochs_per_seg: 3
+  batch_size: 2             # 2 × 6000 pillars fits ~5 GB VRAM
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 35.0
+  save_every: 5
+
+eval:
+  segs: 5
+  score_thresh: 0.2         # peak heatmap threshold for detections
+  nms_iou: 0.2              # 3-D BEV IoU threshold for NMS (informational)
+  # mAP computed at 3-D IoU 0.7 (vehicle), 0.5 (ped/cyclist) — Waymo metric
+  iou_thresholds:
+    vehicle:    0.7
+    pedestrian: 0.5
+    cyclist:    0.5

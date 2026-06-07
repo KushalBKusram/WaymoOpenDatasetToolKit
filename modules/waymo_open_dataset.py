@@ -47,6 +47,24 @@ _L_CAL = '[LiDARCalibrationComponent]'
 # camera_calibration component
 _CAM_CAL = '[CameraCalibrationComponent]'
 
+# camera_segmentation component (2-D panoptic segmentation)
+# Note: only available for segments annotated for the Panoptic Video Seg challenge
+_CAM_SEG = '[CameraSegmentationLabelComponent]'
+
+# lidar_segmentation component (3-D semantic segmentation, per-point labels)
+# Note: only available for segments annotated for the 3-D Semantic Seg challenge
+_L_SEG = '[LiDARSegmentationLabelComponent]'
+
+# camera_hkp component (2-D human keypoints, 17-point COCO-style skeleton)
+# Note: only available for segments annotated for the Pose Estimation challenge
+_CAM_HKP = '[CameraHumanKeypointsComponent]'
+
+# projected_lidar_box component (3-D LiDAR boxes reprojected into camera images)
+_PROJ_BOX = '[ProjectedLiDARBoxComponent]'
+
+# vehicle_pose component (ego-vehicle world pose per frame — always present)
+_VEH_POSE = '[VehiclePoseComponent]'
+
 
 # ---------------------------------------------------------------------------
 # Lookup tables
@@ -76,6 +94,77 @@ YOLO_CLASS_MAP = {
     3: 3,   # TYPE_SIGN       → 3
 }
 YOLO_CLASS_NAMES = ['vehicle', 'pedestrian', 'cyclist', 'sign']
+
+# 3-D LiDAR detection class mapping (vehicle / pedestrian / cyclist only;
+# sign is excluded because it rarely appears in the top-view BEV)
+LIDAR_DET_CLASS_MAP: dict[int, int] = {
+    1: 0,   # TYPE_VEHICLE    → 0
+    2: 1,   # TYPE_PEDESTRIAN → 1
+    4: 2,   # TYPE_CYCLIST    → 2
+}
+LIDAR_DET_CLASS_NAMES: list[str] = ['vehicle', 'pedestrian', 'cyclist']
+
+# Semantic class labels — lidar_segmentation (23 classes)
+# Source: Waymo Open Dataset v2 LiDAR semantic segmentation label spec
+LIDAR_SEG_LABELS: dict[int, str] = {
+    0:  'TYPE_UNDEFINED',
+    1:  'TYPE_CAR',
+    2:  'TYPE_TRUCK',
+    3:  'TYPE_BUS',
+    4:  'TYPE_OTHER_VEHICLE',
+    5:  'TYPE_MOTORCYCLIST',
+    6:  'TYPE_BICYCLIST',
+    7:  'TYPE_PEDESTRIAN',
+    8:  'TYPE_SIGN',
+    9:  'TYPE_TRAFFIC_LIGHT',
+    10: 'TYPE_POLE',
+    11: 'TYPE_CONSTRUCTION_CONE',
+    12: 'TYPE_BICYCLE',
+    13: 'TYPE_MOTORCYCLE',
+    14: 'TYPE_BUILDING',
+    15: 'TYPE_VEGETATION',
+    16: 'TYPE_TREE_TRUNK',
+    17: 'TYPE_CURB',
+    18: 'TYPE_ROAD',
+    19: 'TYPE_LANE_MARKER',
+    20: 'TYPE_OTHER_GROUND',
+    21: 'TYPE_WALKABLE',
+    22: 'TYPE_SIDEWALK',
+}
+
+# Semantic class labels — camera_segmentation (29 classes, panoptic)
+# Source: Waymo Open Dataset v2 camera segmentation label spec
+CAM_SEG_LABELS: dict[int, str] = {
+    0:  'TYPE_UNDEFINED',
+    1:  'TYPE_EGO_VEHICLE',
+    2:  'TYPE_CAR',
+    3:  'TYPE_TRUCK',
+    4:  'TYPE_BUS',
+    5:  'TYPE_OTHER_LARGE_VEHICLE',
+    6:  'TYPE_BICYCLE',
+    7:  'TYPE_MOTORCYCLE',
+    8:  'TYPE_TRAILER',
+    9:  'TYPE_PEDESTRIAN',
+    10: 'TYPE_CYCLIST',
+    11: 'TYPE_MOTORCYCLIST',
+    12: 'TYPE_BIRD',
+    13: 'TYPE_GROUND_ANIMAL',
+    14: 'TYPE_CONSTRUCTION_CONE_POLE',
+    15: 'TYPE_POLE',
+    16: 'TYPE_PEDESTRIAN_OBJECT',
+    17: 'TYPE_SIGN',
+    18: 'TYPE_TRAFFIC_LIGHT',
+    19: 'TYPE_BUILDING',
+    20: 'TYPE_ROAD',
+    21: 'TYPE_LANE_MARKER',
+    22: 'TYPE_ROAD_MARKER',
+    23: 'TYPE_SIDEWALK',
+    24: 'TYPE_VEGETATION',
+    25: 'TYPE_SKY',
+    26: 'TYPE_GROUND',
+    27: 'TYPE_DYNAMIC',
+    28: 'TYPE_STATIC',
+}
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +342,34 @@ class ToolKit:
             points_list.append(pts)
         return points_list
 
+    def load_lidar_points_xyzi(self, timestamp: int) -> list[np.ndarray]:
+        """Like load_lidar_points() but returns (N, 4) arrays with intensity.
+
+        The fourth column is the normalised intensity from range-image channel 1.
+        Use this instead of load_lidar_points() when training PointPillars or
+        any model that benefits from reflectance information.
+
+        Args:
+            timestamp: key.frame_timestamp_micros value.
+
+        Returns:
+            List of (N, 4) float32 arrays [x, y, z, intensity], one per laser.
+        """
+        self._assert_segment()
+        lidar_df = self._read_cached('lidar')
+        cal_df   = self._read_cached('lidar_calibration')
+
+        group = lidar_df[lidar_df['key.frame_timestamp_micros'] == timestamp]
+        points_list: list[np.ndarray] = []
+        for _, row in group.iterrows():
+            laser_name = row['key.laser_name']
+            cal_rows   = cal_df[cal_df['key.laser_name'] == laser_name]
+            if cal_rows.empty:
+                continue
+            pts = self._range_image_to_points_xyzi(row, cal_rows.iloc[0])
+            points_list.append(pts)
+        return points_list
+
     def load_camera_calibration(self, camera_name: int) -> pd.Series:
         """Return the calibration row for one camera (static across frames).
 
@@ -268,6 +385,278 @@ class ToolKit:
         """Full lidar_box DataFrame for EDA (all timestamps in segment)."""
         self._assert_segment()
         return self._read_cached('lidar_box').copy()
+
+    # -----------------------------------------------------------------------
+    # Notebook mode — optional / challenge-specific components
+    # -----------------------------------------------------------------------
+
+    def load_camera_segmentation(
+        self, timestamp: int, camera_name: int
+    ) -> tuple[np.ndarray, np.ndarray, int]:
+        """Decode the panoptic segmentation mask for one camera frame.
+
+        Panoptic label encoding (COCO convention):
+            panoptic_pixel_value = semantic_class_id * divisor + instance_id
+
+        Decoding:
+            semantic_mask = panoptic_label // divisor
+            instance_mask = panoptic_label %  divisor   (0 = no instance)
+
+        Note: camera_segmentation is only available for segments annotated
+        for the 2-D Panoptic Video Segmentation challenge. Loading this
+        component for an unannotated segment will raise a GCS 404 error.
+
+        Call debug_columns('camera_segmentation') to inspect actual column
+        names if a KeyError occurs.
+
+        Args:
+            timestamp:   key.frame_timestamp_micros value.
+            camera_name: Integer camera ID (1=FRONT … 5=SIDE_RIGHT).
+
+        Returns:
+            semantic_mask: (H, W) uint16 — semantic class ID per pixel.
+                           Use CAM_SEG_LABELS[id] for the human-readable name.
+            instance_mask: (H, W) uint16 — instance ID per pixel
+                           (0 = background / no tracked instance).
+            divisor:       int — the panoptic_label_divisor used to encode.
+        """
+        self._assert_segment()
+        df = self._read_cached('camera_segmentation')
+        row = df[
+            (df['key.frame_timestamp_micros'] == timestamp) &
+            (df['key.camera_name'] == camera_name)
+        ].iloc[0]
+
+        divisor = int(row[f'{_CAM_SEG}.panoptic_label_divisor'])
+        label_bytes = row[f'{_CAM_SEG}.panoptic_label']
+
+        # Panoptic label is a PNG-encoded uint16 image.
+        # cv2.IMREAD_UNCHANGED preserves the bit-depth (returns uint16).
+        label = cv2.imdecode(
+            np.frombuffer(label_bytes, dtype=np.uint8),
+            cv2.IMREAD_UNCHANGED,
+        )
+        if label is None:
+            raise ValueError(
+                'cv2.imdecode returned None for panoptic_label bytes. '
+                'Run debug_columns("camera_segmentation") to inspect the '
+                'raw column type — the data may use a different encoding.'
+            )
+        label = label.astype(np.uint32)
+        return (
+            (label // divisor).astype(np.uint16),
+            (label % divisor).astype(np.uint16),
+            divisor,
+        )
+
+    def load_lidar_segmentation(
+        self, timestamp: int
+    ) -> list[np.ndarray]:
+        """Load per-point semantic class labels aligned with load_lidar_points().
+
+        The returned list has one (N,) int32 array per LiDAR laser, in the
+        same laser order as load_lidar_points(). N equals the number of valid
+        first-return range-image pixels (range > 0) for that laser, so the
+        shapes match element-wise.
+
+        Assumed encoding: range_image_return1 has shape (H, W, 2) decoded as
+        int32 — channel 0 = semantic class ID, channel 1 = instance ID.
+
+        Note: lidar_segmentation is only available for segments annotated for
+        the 3-D Semantic Segmentation challenge.
+
+        Call debug_columns('lidar_segmentation') to verify column names.
+
+        Args:
+            timestamp: key.frame_timestamp_micros value.
+
+        Returns:
+            List of (N,) int32 arrays — LIDAR_SEG_LABELS[id] gives the class
+            name. If segmentation is absent for a particular laser (rare),
+            that entry is filled with zeros (TYPE_UNDEFINED).
+        """
+        self._assert_segment()
+        seg_df    = self._read_cached('lidar_segmentation')
+        lidar_df  = self._read_cached('lidar')
+        cal_df    = self._read_cached('lidar_calibration')
+
+        seg_group   = seg_df[seg_df['key.frame_timestamp_micros'] == timestamp]
+        lidar_group = lidar_df[lidar_df['key.frame_timestamp_micros'] == timestamp]
+
+        seg_list: list[np.ndarray] = []
+        for _, lidar_row in lidar_group.iterrows():
+            laser_name = lidar_row['key.laser_name']
+
+            # Skip lasers without calibration (same guard as load_lidar_points)
+            if cal_df[cal_df['key.laser_name'] == laser_name].empty:
+                continue
+
+            # Build the valid mask from the paired range image so array sizes match
+            ri_values = lidar_row[f'{_L}.range_image_return1.values']
+            ri_shape  = lidar_row[f'{_L}.range_image_return1.shape.dims']
+            range_image = tf.reshape(
+                tf.io.decode_raw(ri_values, tf.float32), ri_shape
+            )
+            valid_flat = tf.reshape(range_image[..., 0] > 0, [-1]).numpy()
+            n_valid = int(valid_flat.sum())
+
+            seg_rows = seg_group[seg_group['key.laser_name'] == laser_name]
+            if seg_rows.empty:
+                # No segmentation for this laser — pad with TYPE_UNDEFINED (0)
+                seg_list.append(np.zeros(n_valid, dtype=np.int32))
+                continue
+
+            seg_row = seg_rows.iloc[0]
+            seg_values = seg_row[f'{_L_SEG}.range_image_return1.values']
+            seg_shape  = seg_row[f'{_L_SEG}.range_image_return1.shape.dims']
+
+            # Decoded int32 array, shape (H, W, 2):
+            #   channel 0 = semantic class ID
+            #   channel 1 = instance ID
+            seg_arr = (
+                tf.io.decode_raw(seg_values, tf.int32)
+                .numpy()
+                .reshape(seg_shape)
+            )
+            semantic_flat = seg_arr[..., 0].reshape(-1)
+            seg_list.append(semantic_flat[valid_flat].astype(np.int32))
+
+        return seg_list
+
+    def load_camera_keypoints(
+        self, timestamp: int, camera_name: int
+    ) -> pd.DataFrame:
+        """Return all 2-D human keypoints for one (timestamp, camera) pair.
+
+        Each row in the returned DataFrame represents one keypoint for one
+        person. Links to the camera_box component via key.camera_object_id.
+
+        Expected key columns (verify with debug_columns('camera_hkp')):
+            key.camera_object_id
+            [CameraHumanKeypointsComponent].keypoints.type
+                 1=nose  2=left_eye  3=right_eye  4=left_ear  5=right_ear
+                 6=left_shoulder  7=right_shoulder  8=left_elbow
+                 9=right_elbow   10=left_wrist    11=right_wrist
+                12=left_hip      13=right_hip     14=left_knee
+                15=right_knee    16=left_ankle    17=right_ankle
+            [CameraHumanKeypointsComponent].keypoints.keypoint_2d.location_px.x
+            [CameraHumanKeypointsComponent].keypoints.keypoint_2d.location_px.y
+            [CameraHumanKeypointsComponent].keypoints.keypoint_2d.visibility.is_occluded
+
+        Note: camera_hkp is available only for Pose Estimation challenge
+        segments. Returns an empty DataFrame for unannotated segments (the
+        GCS file may not exist — catch gcsfs.exceptions.HTTPError if needed).
+
+        Args:
+            timestamp:   key.frame_timestamp_micros value.
+            camera_name: Integer camera ID.
+
+        Returns:
+            pd.DataFrame — empty if no keypoints annotated for this frame.
+        """
+        self._assert_segment()
+        df = self._read_cached('camera_hkp')
+        return df[
+            (df['key.frame_timestamp_micros'] == timestamp) &
+            (df['key.camera_name'] == camera_name)
+        ].copy()
+
+    def load_projected_lidar_boxes(
+        self, timestamp: int, camera_name: int
+    ) -> pd.DataFrame:
+        """Return 3-D LiDAR boxes projected into one camera image.
+
+        The projected_lidar_box component provides 3-D LiDAR boxes
+        reprojected into 2-D camera coordinates. Useful for cross-modal
+        ground-truth alignment without manual projection math.
+
+        Expected key columns (verify with debug_columns('projected_lidar_box')):
+            key.laser_name          — source LiDAR sensor
+            key.laser_object_id     — links to the lidar_box component
+            [ProjectedLiDARBoxComponent].box.center.x   (pixels)
+            [ProjectedLiDARBoxComponent].box.center.y   (pixels)
+            [ProjectedLiDARBoxComponent].box.size.x     (pixels, width)
+            [ProjectedLiDARBoxComponent].box.size.y     (pixels, height)
+            [ProjectedLiDARBoxComponent].type            (int label type)
+
+        Args:
+            timestamp:   key.frame_timestamp_micros value.
+            camera_name: Integer camera ID.
+
+        Returns:
+            pd.DataFrame with one row per projected 3-D box visible in this
+            camera at this timestamp.
+        """
+        self._assert_segment()
+        df = self._read_cached('projected_lidar_box')
+        return df[
+            (df['key.frame_timestamp_micros'] == timestamp) &
+            (df['key.camera_name'] == camera_name)
+        ].copy()
+
+    def load_vehicle_pose(self, timestamp: int) -> np.ndarray:
+        """Return the 4×4 world-from-vehicle transform for one frame.
+
+        The transform maps points in vehicle frame (x=forward, y=left, z=up)
+        to the world coordinate frame. The translation column T[:3, 3] gives
+        the vehicle position in the world frame — useful for trajectory plots.
+
+        Column accessed:
+            [VehiclePoseComponent].world_from_vehicle.transform
+            — list of 16 float64 values (row-major 4×4 matrix, same layout
+              as the camera/lidar extrinsic transforms)
+
+        Args:
+            timestamp: key.frame_timestamp_micros value.
+
+        Returns:
+            (4, 4) float64 numpy array — world_from_vehicle transform.
+        """
+        self._assert_segment()
+        df  = self._read_cached('vehicle_pose')
+        row = df[df['key.frame_timestamp_micros'] == timestamp].iloc[0]
+        return np.array(
+            row[f'{_VEH_POSE}.world_from_vehicle.transform'],
+            dtype=np.float64,
+        ).reshape(4, 4)
+
+    def load_all_vehicle_poses(self) -> list[tuple[int, np.ndarray]]:
+        """Return [(timestamp, T_world_vehicle), ...] for all frames.
+
+        Sorted by timestamp ascending so connecting positions in returned
+        order traces the driven trajectory.
+
+        Returns:
+            List of (timestamp_micros, 4×4 float64 matrix) tuples.
+        """
+        self._assert_segment()
+        df = self._read_cached('vehicle_pose')
+        result: list[tuple[int, np.ndarray]] = []
+        for _, row in df.iterrows():
+            ts = int(row['key.frame_timestamp_micros'])
+            T  = np.array(
+                row[f'{_VEH_POSE}.world_from_vehicle.transform'],
+                dtype=np.float64,
+            ).reshape(4, 4)
+            result.append((ts, T))
+        return sorted(result, key=lambda x: x[0])
+
+    def get_segment_stats(self) -> pd.DataFrame:
+        """Return the full stats DataFrame for the current segment.
+
+        The stats component contains per-frame difficulty metadata used for
+        stratified evaluation across the Waymo challenges. Useful for:
+          * Filtering frames by LEVEL_1 / LEVEL_2 difficulty
+          * Verifying annotation coverage before training
+          * Sampling balanced mini-datasets
+
+        Call debug_columns('stats') to inspect available columns.
+
+        Returns:
+            pd.DataFrame with all stats rows for the segment.
+        """
+        self._assert_segment()
+        return self._read_cached('stats').copy()
 
     # -----------------------------------------------------------------------
     # Extraction mode — write files to disk
@@ -527,3 +916,61 @@ class ToolKit:
 
         valid_flat = tf.reshape(valid_mask, [-1])
         return tf.boolean_mask(xyz_vehicle, valid_flat).numpy()
+
+    @staticmethod
+    def _range_image_to_points_xyzi(
+        lidar_row: pd.Series,
+        cal_row: pd.Series,
+    ) -> np.ndarray:
+        """Convert one LiDAR's first-return range image to (N, 4) xyzi.
+
+        Identical to _range_image_to_points() but appends normalised
+        intensity (range-image channel 1) as the fourth column.
+
+        Args:
+            lidar_row: Row from the 'lidar' component DataFrame.
+            cal_row:   Matching row from the 'lidar_calibration' DataFrame.
+
+        Returns:
+            (N, 4) float32 array — [x, y, z, intensity].
+        """
+        ri_values = lidar_row[f'{_L}.range_image_return1.values']
+        ri_shape  = lidar_row[f'{_L}.range_image_return1.shape.dims']
+
+        range_image = tf.reshape(
+            tf.io.decode_raw(ri_values, tf.float32),
+            ri_shape,
+        )
+        valid_mask = range_image[..., 0] > 0   # channel 0 = range
+
+        height, width = int(ri_shape[0]), int(ri_shape[1])
+
+        azimuth    = tf.cast(tf.linspace(np.pi, -np.pi, width), tf.float32)
+        inclination = tf.cast(cal_row[f'{_L_CAL}.beam_inclinations'], tf.float32)
+
+        inc_map = tf.broadcast_to(
+            tf.reshape(inclination, [-1, 1]), [height, width]
+        )
+        az_map = tf.broadcast_to(azimuth, [height, width])
+
+        r       = range_image[..., 0]
+        cos_inc = tf.cos(inc_map)
+        x = r * cos_inc * tf.cos(az_map)
+        y = r * cos_inc * tf.sin(az_map)
+        z = r * tf.sin(inc_map)
+
+        ones     = tf.ones_like(x)
+        xyz1     = tf.reshape(tf.stack([x, y, z, ones], axis=-1), [-1, 4])
+        extrinsic = tf.cast(
+            tf.reshape(cal_row[f'{_L_CAL}.extrinsic.transform'], [4, 4]),
+            tf.float32,
+        )
+        xyz_vehicle = tf.matmul(xyz1, tf.transpose(extrinsic))[:, :3]
+
+        # intensity — channel 1 of the range image, already in [0, 1]
+        intensity  = tf.reshape(range_image[..., 1], [-1])
+        valid_flat = tf.reshape(valid_mask, [-1])
+
+        xyz_valid = tf.boolean_mask(xyz_vehicle, valid_flat)
+        i_valid   = tf.boolean_mask(intensity,   valid_flat)
+        return tf.concat([xyz_valid, tf.expand_dims(i_valid, 1)], axis=1).numpy()

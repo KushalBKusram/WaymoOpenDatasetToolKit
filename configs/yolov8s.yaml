@@ -1,0 +1,34 @@
+# configs/yolov8s.yaml
+# YOLOv8-small on Waymo camera data.
+# Requires ~6 GB VRAM — Colab Pro (T4 or A100) or a dedicated GPU.
+#
+# Usage:
+#   python train.py --config configs/yolov8s.yaml
+
+name: yolov8s
+task: camera_2d_detection
+
+model:
+  type: YOLOv8Detector
+  backbone: s
+  num_classes: 4
+  class_names: [vehicle, pedestrian, cyclist, sign]
+
+data:
+  split: training
+  cameras: [1, 2, 3, 4, 5]
+  img_size: 640
+
+train:
+  total_segs: null             # all segments
+  epochs_per_seg: 3
+  batch_size: 16
+  lr: 5.0e-5
+  weight_decay: 1.0e-4
+  grad_clip: 10.0
+  save_every: 10
+
+eval:
+  segs: 10
+  conf: 0.25
+  iou: 0.45

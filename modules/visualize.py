@@ -17,6 +17,10 @@ plot_bev                 Bird's-eye-view scatter of LiDAR points + 3-D boxes.
 build_open3d_scene       Assemble an Open3D PointCloud + box LineSet list.
 project_lidar_to_camera  Project vehicle-frame LiDAR points into pixel space.
 draw_lidar_on_camera     Colour-coded LiDAR depth overlay on a camera image.
+draw_segmentation_mask   Alpha-blend a panoptic/semantic mask onto a camera frame.
+draw_keypoints           Draw 17-point COCO skeleton overlays on a camera frame.
+colorize_lidar_by_class  Build an Open3D PointCloud coloured by semantic class.
+plot_ego_trajectory      Plot the ego-vehicle GPS/world trajectory from poses.
 """
 
 import cv2
@@ -68,6 +72,68 @@ CAMERA_NAMES = {
     3: 'FRONT_RIGHT',
     4: 'SIDE_LEFT',
     5: 'SIDE_RIGHT',
+}
+
+# RGB colours (0–1) per LiDAR semantic class (23 classes)
+# Matches LIDAR_SEG_LABELS in waymo_open_dataset.py
+LIDAR_SEG_COLORS_RGB: dict[int, tuple] = {
+    0:  (0.50, 0.50, 0.50),   # UNDEFINED         — grey
+    1:  (0.13, 0.86, 0.13),   # CAR               — green
+    2:  (0.00, 0.50, 0.90),   # TRUCK             — blue
+    3:  (0.00, 0.30, 0.70),   # BUS               — dark blue
+    4:  (0.40, 0.70, 0.90),   # OTHER_VEHICLE     — light blue
+    5:  (1.00, 0.50, 0.00),   # MOTORCYCLIST      — orange
+    6:  (1.00, 0.80, 0.00),   # BICYCLIST         — gold
+    7:  (0.20, 0.60, 1.00),   # PEDESTRIAN        — sky blue
+    8:  (1.00, 1.00, 0.00),   # SIGN              — yellow
+    9:  (1.00, 0.10, 0.10),   # TRAFFIC_LIGHT     — red
+    10: (0.60, 0.40, 0.20),   # POLE              — brown
+    11: (1.00, 0.60, 0.20),   # CONSTRUCTION_CONE — amber
+    12: (0.90, 0.70, 0.00),   # BICYCLE           — dark gold
+    13: (0.80, 0.40, 0.00),   # MOTORCYCLE        — dark orange
+    14: (0.35, 0.25, 0.15),   # BUILDING          — dark brown
+    15: (0.10, 0.65, 0.20),   # VEGETATION        — forest green
+    16: (0.25, 0.45, 0.10),   # TREE_TRUNK        — dark green
+    17: (0.65, 0.65, 0.65),   # CURB              — light grey
+    18: (0.30, 0.30, 0.30),   # ROAD              — dark grey
+    19: (0.75, 0.75, 0.00),   # LANE_MARKER       — yellow-green
+    20: (0.50, 0.50, 0.30),   # OTHER_GROUND      — olive
+    21: (0.80, 0.80, 0.80),   # WALKABLE          — very light grey
+    22: (0.92, 0.92, 0.92),   # SIDEWALK          — near-white
+}
+
+# RGB colours (0–1) per camera panoptic class (29 classes)
+# Matches CAM_SEG_LABELS in waymo_open_dataset.py
+CAM_SEG_COLORS_RGB: dict[int, tuple] = {
+    0:  (0.50, 0.50, 0.50),   # UNDEFINED
+    1:  (0.10, 0.10, 0.10),   # EGO_VEHICLE       — near-black
+    2:  (0.13, 0.86, 0.13),   # CAR               — green
+    3:  (0.00, 0.50, 0.90),   # TRUCK             — blue
+    4:  (0.00, 0.30, 0.70),   # BUS               — dark blue
+    5:  (0.40, 0.70, 0.90),   # OTHER_LARGE_VEHICLE
+    6:  (0.90, 0.70, 0.00),   # BICYCLE           — dark gold
+    7:  (0.80, 0.40, 0.00),   # MOTORCYCLE        — dark orange
+    8:  (0.20, 0.20, 0.70),   # TRAILER           — navy
+    9:  (0.20, 0.60, 1.00),   # PEDESTRIAN        — sky blue
+    10: (1.00, 0.50, 0.05),   # CYCLIST           — orange
+    11: (1.00, 0.30, 0.00),   # MOTORCYCLIST      — red-orange
+    12: (0.80, 0.90, 0.30),   # BIRD              — lime
+    13: (0.60, 0.80, 0.20),   # GROUND_ANIMAL
+    14: (1.00, 0.60, 0.20),   # CONSTRUCTION_CONE_POLE
+    15: (0.60, 0.40, 0.20),   # POLE              — brown
+    16: (0.90, 0.70, 0.80),   # PEDESTRIAN_OBJECT — pink
+    17: (1.00, 1.00, 0.00),   # SIGN              — yellow
+    18: (1.00, 0.10, 0.10),   # TRAFFIC_LIGHT     — red
+    19: (0.35, 0.25, 0.15),   # BUILDING          — dark brown
+    20: (0.30, 0.30, 0.30),   # ROAD              — dark grey
+    21: (0.75, 0.75, 0.00),   # LANE_MARKER       — yellow-green
+    22: (0.90, 0.90, 0.30),   # ROAD_MARKER       — pale yellow
+    23: (0.80, 0.80, 0.80),   # SIDEWALK          — light grey
+    24: (0.10, 0.65, 0.20),   # VEGETATION        — forest green
+    25: (0.40, 0.70, 0.95),   # SKY               — light blue
+    26: (0.50, 0.50, 0.30),   # GROUND            — olive
+    27: (0.90, 0.40, 0.90),   # DYNAMIC           — magenta
+    28: (0.60, 0.60, 0.90),   # STATIC            — periwinkle
 }
 
 
@@ -369,6 +435,228 @@ def draw_lidar_on_camera(
         cv2.circle(out, (px, py), dot_radius, col.tolist(), -1)
 
     return out
+
+
+def draw_segmentation_mask(
+    image: np.ndarray,
+    semantic_mask: np.ndarray,
+    label_colors: dict | None = None,
+    alpha: float = 0.5,
+) -> np.ndarray:
+    """Alpha-blend a semantic/panoptic segmentation mask onto a camera frame.
+
+    Args:
+        image:        BGR numpy array from toolkit.load_camera_frame().
+        semantic_mask:(H, W) uint16 semantic class IDs from
+                      toolkit.load_camera_segmentation()[0].
+        label_colors: dict mapping class_id → (R, G, B) floats in [0, 1].
+                      Defaults to CAM_SEG_COLORS_RGB (29 camera classes).
+        alpha:        Mask blend weight.  0 = image only, 1 = mask only.
+
+    Returns:
+        Annotated BGR numpy array (copy, not in-place).
+    """
+    if label_colors is None:
+        label_colors = CAM_SEG_COLORS_RGB
+
+    h, w = image.shape[:2]
+    color_mask_bgr = np.zeros((h, w, 3), dtype=np.float32)
+
+    for class_id, rgb in label_colors.items():
+        pixels = semantic_mask == class_id
+        if not np.any(pixels):
+            continue
+        # RGB → BGR for OpenCV
+        color_mask_bgr[pixels] = (rgb[2], rgb[1], rgb[0])
+
+    color_uint8 = (color_mask_bgr * 255).astype(np.uint8)
+    return cv2.addWeighted(image, 1.0 - alpha, color_uint8, alpha, 0)
+
+
+# COCO-style skeleton edge pairs (0-indexed; keypoint type field is 1-indexed)
+_COCO_SKELETON = [
+    (0, 1), (0, 2), (1, 3), (2, 4),           # face
+    (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),  # arms
+    (5, 11), (6, 12), (11, 12),                # torso
+    (11, 13), (13, 15), (12, 14), (14, 16),    # legs
+]
+
+_KP_NAMES = [
+    'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
+    'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
+    'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
+    'left_knee', 'right_knee', 'left_ankle', 'right_ankle',
+]
+
+# Column-name prefix for camera_hkp (matches waymo_open_dataset._CAM_HKP)
+_CAM_HKP = '[CameraHumanKeypointsComponent]'
+
+
+def draw_keypoints(
+    image: np.ndarray,
+    keypoints_df,
+    kp_radius: int = 4,
+    line_thickness: int = 2,
+    color: tuple = (0, 255, 180),
+) -> np.ndarray:
+    """Draw 17-point COCO-style human skeleton overlays on a camera frame.
+
+    Groups keypoints by key.camera_object_id (one skeleton per person).
+    Keypoint type field is 1-indexed (1=nose … 17=right_ankle).
+
+    Call toolkit.debug_columns('camera_hkp') to verify exact column names
+    if this function raises a KeyError.
+
+    Args:
+        image:         BGR numpy array from toolkit.load_camera_frame().
+        keypoints_df:  DataFrame from toolkit.load_camera_keypoints().
+        kp_radius:     Radius of each joint circle in pixels.
+        line_thickness:Thickness of skeleton limb lines.
+        color:         BGR colour for joints and limbs.
+
+    Returns:
+        Annotated BGR numpy array (copy, not in-place).
+    """
+    out = image.copy()
+
+    obj_col = 'key.camera_object_id'
+    type_col = f'{_CAM_HKP}.keypoints.type'
+    x_col    = f'{_CAM_HKP}.keypoints.keypoint_2d.location_px.x'
+    y_col    = f'{_CAM_HKP}.keypoints.keypoint_2d.location_px.y'
+    occ_col  = f'{_CAM_HKP}.keypoints.keypoint_2d.visibility.is_occluded'
+
+    if keypoints_df.empty or obj_col not in keypoints_df.columns:
+        return out
+
+    for obj_id, group in keypoints_df.groupby(obj_col):
+        # Build 0-indexed keypoint dict: idx → (x, y, visible)
+        pts: dict[int, tuple[int, int, bool]] = {}
+        for _, row in group.iterrows():
+            kp_type = int(row.get(type_col, 0))
+            if kp_type == 0:
+                continue
+            idx = kp_type - 1   # convert 1-indexed type to 0-indexed
+            x   = float(row.get(x_col, 0.0))
+            y   = float(row.get(y_col, 0.0))
+            is_occ = bool(row.get(occ_col, True))
+            pts[idx] = (int(x), int(y), not is_occ)
+
+        # Draw limbs first so joint circles render on top
+        for i, j in _COCO_SKELETON:
+            if i in pts and j in pts and pts[i][2] and pts[j][2]:
+                cv2.line(
+                    out, pts[i][:2], pts[j][:2],
+                    color, line_thickness, cv2.LINE_AA,
+                )
+
+        # Draw joints
+        for idx, (x, y, visible) in pts.items():
+            if visible:
+                cv2.circle(out, (x, y), kp_radius, color, -1, cv2.LINE_AA)
+
+    return out
+
+
+def colorize_lidar_by_class(
+    points_list: list,
+    seg_labels_list: list,
+    label_colors: dict | None = None,
+) -> o3d.geometry.PointCloud:
+    """Build an Open3D PointCloud where each point is coloured by semantic class.
+
+    Args:
+        points_list:     List of (N, 3) float32 arrays from
+                         toolkit.load_lidar_points().
+        seg_labels_list: List of (N,) int32 arrays from
+                         toolkit.load_lidar_segmentation().
+                         Must be the same length as points_list with matching
+                         array sizes.
+        label_colors:    dict mapping class_id → (R, G, B) in [0, 1].
+                         Defaults to LIDAR_SEG_COLORS_RGB (23 LiDAR classes).
+
+    Returns:
+        open3d.geometry.PointCloud — pass to o3d.visualization.draw_geometries()
+        or build_open3d_scene() for interactive viewing.
+    """
+    if label_colors is None:
+        label_colors = LIDAR_SEG_COLORS_RGB
+
+    all_pts    = np.vstack(points_list).astype(np.float64)
+    all_labels = np.concatenate(seg_labels_list).astype(np.int32)
+
+    colors = np.full((len(all_pts), 3), 0.5, dtype=np.float64)  # default grey
+    for class_id, rgb in label_colors.items():
+        mask = all_labels == class_id
+        if np.any(mask):
+            colors[mask] = rgb
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(all_pts)
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    return pcd
+
+
+def plot_ego_trajectory(
+    poses: list,
+    range_m: float = 200.0,
+    figsize: tuple = (10, 10),
+) -> plt.Figure:
+    """Plot the ego-vehicle trajectory from vehicle_pose data.
+
+    Args:
+        poses:   List of (timestamp, 4×4 matrix) from
+                 toolkit.load_all_vehicle_poses().  T[:3, 3] gives the
+                 vehicle position in the world frame.
+        range_m: Half-width of the square view in metres.
+        figsize: Matplotlib figure size.
+
+    Returns:
+        matplotlib Figure — call plt.show() or display(fig) in a notebook.
+    """
+    positions = np.array([T[:3, 3] for _, T in poses])   # (N, 3) world XYZ
+
+    fig, ax = plt.subplots(figsize=figsize, facecolor='#1a1a1a')
+    ax.set_facecolor('#1a1a1a')
+
+    n = len(positions)
+    if n == 0:
+        ax.text(0.5, 0.5, 'No pose data', color='white',
+                ha='center', va='center', transform=ax.transAxes)
+        return fig
+
+    cmap = plt.get_cmap('plasma')
+    # Draw trajectory as a series of coloured line segments (early=dark, late=bright)
+    for i in range(n - 1):
+        ax.plot(
+            positions[i:i+2, 0], positions[i:i+2, 1],
+            color=cmap(i / max(n - 1, 1)),
+            linewidth=2.0,
+            solid_capstyle='round',
+        )
+
+    ax.scatter(*positions[0, :2],  color='lime',   s=120, zorder=5, label='Start')
+    ax.scatter(*positions[-1, :2], color='tomato', s=120, zorder=5, label='End')
+
+    cx, cy = positions[:, 0].mean(), positions[:, 1].mean()
+    ax.set_xlim(cx - range_m, cx + range_m)
+    ax.set_ylim(cy - range_m, cy + range_m)
+    ax.set_aspect('equal')
+    ax.set_xlabel('X / m (world)', color='white')
+    ax.set_ylabel('Y / m (world)', color='white')
+    ax.tick_params(colors='white')
+    ax.set_title('Ego-vehicle Trajectory', color='white', pad=10)
+    ax.legend(facecolor='#333333', labelcolor='white')
+
+    # Colorbar showing temporal progress
+    sm = plt.cm.ScalarMappable(cmap='plasma', norm=plt.Normalize(0, n - 1))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, shrink=0.5, pad=0.02)
+    cbar.set_label('Frame index', color='white')
+    cbar.ax.yaxis.set_tick_params(color='white')
+    plt.setp(cbar.ax.yaxis.get_ticklabels(), color='white')
+
+    fig.tight_layout()
+    return fig
 
 
 # ---------------------------------------------------------------------------

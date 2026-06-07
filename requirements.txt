@@ -24,8 +24,10 @@ open3d
 numpy
 matplotlib
 
-# Training (optional — only needed for train.ipynb)
+# Training + evaluation (optional — only needed for train.ipynb)
 ultralytics
+torchmetrics
+pyyaml
 
 # Notebook
 jupyter
