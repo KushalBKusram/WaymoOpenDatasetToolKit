@@ -242,7 +242,7 @@ def plot_bev(points_list: list, boxes_df=None,
     if points_list:
         all_pts = np.vstack(points_list)
         z = all_pts[:, 2]
-        z_norm = np.clip((z - z.min()) / (z.ptp() + 1e-6), 0, 1)
+        z_norm = np.clip((z - z.min()) / ((z.max() - z.min()) + 1e-6), 0, 1)
         ax.scatter(
             all_pts[:, 0], all_pts[:, 1],
             c=z_norm, cmap='plasma', s=point_size, linewidths=0, alpha=0.8,
@@ -316,7 +316,7 @@ def build_open3d_scene(points_list: list, boxes_df=None) -> list:
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(all_pts)
         z = all_pts[:, 2]
-        z_norm = np.clip((z - z.min()) / (z.ptp() + 1e-6), 0, 1)
+        z_norm = np.clip((z - z.min()) / ((z.max() - z.min()) + 1e-6), 0, 1)
         colors = plt.get_cmap('plasma')(z_norm)[:, :3]
         pcd.colors = o3d.utility.Vector3dVector(colors)
         geometries.append(pcd)
