@@ -492,12 +492,8 @@ class ToolKit:
                 continue
 
             # Build the valid mask from the paired range image so array sizes match
-            ri_values = lidar_row[f'{_L}.range_image_return1.values']
-            ri_shape  = lidar_row[f'{_L}.range_image_return1.shape.dims']
-            range_image = tf.reshape(
-                tf.io.decode_raw(ri_values, tf.float32), ri_shape
-            )
-            valid_flat = tf.reshape(range_image[..., 0] > 0, [-1]).numpy()
+            range_image = ToolKit._decode_range_image(lidar_row)
+            valid_flat  = tf.reshape(range_image[..., 0] > 0, [-1]).numpy()
             n_valid = int(valid_flat.sum())
 
             seg_rows = seg_group[seg_group['key.laser_name'] == laser_name]
@@ -508,16 +504,18 @@ class ToolKit:
 
             seg_row = seg_rows.iloc[0]
             seg_values = seg_row[f'{_L_SEG}.range_image_return1.values']
-            seg_shape  = seg_row[f'{_L_SEG}.range_image_return1.shape.dims']
+            seg_shape  = seg_row[f'{_L_SEG}.range_image_return1.shape']
 
-            # Decoded int32 array, shape (H, W, 2):
-            #   channel 0 = semantic class ID
-            #   channel 1 = instance ID
-            seg_arr = (
-                tf.io.decode_raw(seg_values, tf.int32)
-                .numpy()
-                .reshape(seg_shape)
-            )
+            # Seg values may be pre-decoded int32 ndarray or raw bytes —
+            # handle both for forward-compatibility.
+            if isinstance(seg_values, np.ndarray) and seg_values.dtype == np.int32:
+                seg_arr = seg_values.reshape(seg_shape)
+            else:
+                seg_arr = (
+                    tf.io.decode_raw(seg_values, tf.int32)
+                    .numpy()
+                    .reshape(seg_shape)
+                )
             semantic_flat = seg_arr[..., 0].reshape(-1)
             seg_list.append(semantic_flat[valid_flat].astype(np.int32))
 
@@ -860,6 +858,38 @@ class ToolKit:
     # -----------------------------------------------------------------------
 
     @staticmethod
+    def _get_beam_inclinations(cal_row: pd.Series, height: int) -> 'tf.Tensor':
+        """Return (height,) float32 beam-inclination angles for one laser.
+
+        The TOP lidar stores per-beam inclination values directly.
+        Side/rear lasers (laser_name 2-5) store only min/max; we linearly
+        interpolate from max (top) to min (bottom) to match scan order.
+        """
+        incl_vals = cal_row[f'{_L_CAL}.beam_inclination.values']
+        if (incl_vals is not None
+                and hasattr(incl_vals, '__len__')
+                and len(incl_vals) == height):
+            return tf.cast(incl_vals, tf.float32)
+        incl_min = float(cal_row[f'{_L_CAL}.beam_inclination.min'])
+        incl_max = float(cal_row[f'{_L_CAL}.beam_inclination.max'])
+        return tf.cast(tf.linspace(incl_max, incl_min, height), tf.float32)
+
+    @staticmethod
+    def _decode_range_image(lidar_row: pd.Series) -> 'tf.Tensor':
+        """Decode range_image_return1 from a lidar Parquet row.
+
+        In Waymo v2 Parquet the values column is already a float32 ndarray
+        (not raw bytes), so tf.io.decode_raw is NOT needed.
+
+        Returns:
+            (H, W, C) float32 tensor — channels are
+            [range_m, intensity, elongation, is_in_nlz].
+        """
+        ri_shape  = lidar_row[f'{_L}.range_image_return1.shape']   # int32 [H, W, C]
+        ri_values = lidar_row[f'{_L}.range_image_return1.values']   # float32 ndarray
+        return tf.constant(ri_values.reshape(ri_shape))
+
+    @staticmethod
     def _range_image_to_points(
         lidar_row: pd.Series,
         cal_row: pd.Series,
@@ -876,39 +906,29 @@ class ToolKit:
             z = r * sin(inc)
         followed by the sensor extrinsic (sensor -> vehicle frame).
         """
-        # --- decode range image ---
-        ri_values = lidar_row[f'{_L}.range_image_return1.values']
-        ri_shape = lidar_row[f'{_L}.range_image_return1.shape.dims']
+        range_image = ToolKit._decode_range_image(lidar_row)   # (H, W, C)
+        valid_mask  = range_image[..., 0] > 0                  # channel 0 = range
 
-        range_image = tf.reshape(
-            tf.io.decode_raw(ri_values, tf.float32),
-            ri_shape,
-        )
-        valid_mask = range_image[..., 0] > 0   # channel 0 = range in metres
-
-        height, width = int(ri_shape[0]), int(ri_shape[1])
+        ri_shape       = lidar_row[f'{_L}.range_image_return1.shape']
+        height, width  = int(ri_shape[0]), int(ri_shape[1])
 
         # --- spherical coordinates ---
-        azimuth = tf.cast(tf.linspace(np.pi, -np.pi, width), tf.float32)
-        inclination = tf.cast(
-            cal_row[f'{_L_CAL}.beam_inclinations'], tf.float32
-        )
+        azimuth     = tf.cast(tf.linspace(np.pi, -np.pi, width), tf.float32)
+        inclination = ToolKit._get_beam_inclinations(cal_row, height)
 
-        inc_map = tf.broadcast_to(
-            tf.reshape(inclination, [-1, 1]), [height, width]
-        )
-        az_map = tf.broadcast_to(azimuth, [height, width])
+        inc_map = tf.broadcast_to(tf.reshape(inclination, [-1, 1]), [height, width])
+        az_map  = tf.broadcast_to(azimuth, [height, width])
 
-        r = range_image[..., 0]
+        r       = range_image[..., 0]
         cos_inc = tf.cos(inc_map)
         x = r * cos_inc * tf.cos(az_map)
         y = r * cos_inc * tf.sin(az_map)
         z = r * tf.sin(inc_map)
 
         # --- apply sensor extrinsic (sensor -> vehicle frame) ---
-        ones = tf.ones_like(x)
-        xyz1 = tf.reshape(tf.stack([x, y, z, ones], axis=-1), [-1, 4])
-        extrinsic = tf.cast(
+        ones        = tf.ones_like(x)
+        xyz1        = tf.reshape(tf.stack([x, y, z, ones], axis=-1), [-1, 4])
+        extrinsic   = tf.cast(
             tf.reshape(cal_row[f'{_L_CAL}.extrinsic.transform'], [4, 4]),
             tf.float32,
         )
@@ -934,24 +954,17 @@ class ToolKit:
         Returns:
             (N, 4) float32 array — [x, y, z, intensity].
         """
-        ri_values = lidar_row[f'{_L}.range_image_return1.values']
-        ri_shape  = lidar_row[f'{_L}.range_image_return1.shape.dims']
+        range_image = ToolKit._decode_range_image(lidar_row)   # (H, W, C)
+        valid_mask  = range_image[..., 0] > 0
 
-        range_image = tf.reshape(
-            tf.io.decode_raw(ri_values, tf.float32),
-            ri_shape,
-        )
-        valid_mask = range_image[..., 0] > 0   # channel 0 = range
+        ri_shape       = lidar_row[f'{_L}.range_image_return1.shape']
+        height, width  = int(ri_shape[0]), int(ri_shape[1])
 
-        height, width = int(ri_shape[0]), int(ri_shape[1])
+        azimuth     = tf.cast(tf.linspace(np.pi, -np.pi, width), tf.float32)
+        inclination = ToolKit._get_beam_inclinations(cal_row, height)
 
-        azimuth    = tf.cast(tf.linspace(np.pi, -np.pi, width), tf.float32)
-        inclination = tf.cast(cal_row[f'{_L_CAL}.beam_inclinations'], tf.float32)
-
-        inc_map = tf.broadcast_to(
-            tf.reshape(inclination, [-1, 1]), [height, width]
-        )
-        az_map = tf.broadcast_to(azimuth, [height, width])
+        inc_map = tf.broadcast_to(tf.reshape(inclination, [-1, 1]), [height, width])
+        az_map  = tf.broadcast_to(azimuth, [height, width])
 
         r       = range_image[..., 0]
         cos_inc = tf.cos(inc_map)
@@ -959,15 +972,15 @@ class ToolKit:
         y = r * cos_inc * tf.sin(az_map)
         z = r * tf.sin(inc_map)
 
-        ones     = tf.ones_like(x)
-        xyz1     = tf.reshape(tf.stack([x, y, z, ones], axis=-1), [-1, 4])
-        extrinsic = tf.cast(
+        ones        = tf.ones_like(x)
+        xyz1        = tf.reshape(tf.stack([x, y, z, ones], axis=-1), [-1, 4])
+        extrinsic   = tf.cast(
             tf.reshape(cal_row[f'{_L_CAL}.extrinsic.transform'], [4, 4]),
             tf.float32,
         )
         xyz_vehicle = tf.matmul(xyz1, tf.transpose(extrinsic))[:, :3]
 
-        # intensity — channel 1 of the range image, already in [0, 1]
+        # intensity — channel 1 of the range image (reflectivity, unnormalized)
         intensity  = tf.reshape(range_image[..., 1], [-1])
         valid_flat = tf.reshape(valid_mask, [-1])
 

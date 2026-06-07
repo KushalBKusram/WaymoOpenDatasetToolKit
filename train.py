@@ -179,9 +179,9 @@ class WaymoLiDARDataset(Dataset):
             cx  = float(row[f'{_L_BOX}.box.center.x'])
             cy  = float(row[f'{_L_BOX}.box.center.y'])
             cz  = float(row[f'{_L_BOX}.box.center.z'])
-            dx  = float(row[f'{_L_BOX}.box.length'])     # forward extent
-            dy  = float(row[f'{_L_BOX}.box.width'])      # lateral extent
-            dz  = float(row[f'{_L_BOX}.box.height'])
+            dx  = float(row[f'{_L_BOX}.box.size.x'])     # length (forward extent)
+            dy  = float(row[f'{_L_BOX}.box.size.y'])     # width  (lateral extent)
+            dz  = float(row[f'{_L_BOX}.box.size.z'])
             hdg = float(row[f'{_L_BOX}.box.heading'])
             gt_boxes.append([cx, cy, cz, dx, dy, dz, hdg])
             gt_labels.append(LIDAR_DET_CLASS_MAP[type_int])
