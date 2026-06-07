@@ -2,7 +2,7 @@
 #
 # Detection range  : ±50 m XY, −3…3 m Z
 # Pillar size      : 0.25 m × 0.25 m  →  400×400 BEV
-# Max pillars      : 6 000  (keep densest)
+# Max pillars      : 4 096  (T4-safe; was 6000 — reduced to avoid OOM)
 # Max pts/pillar   : 20
 # Classes          : vehicle (0), pedestrian (1), cyclist (2)
 #
@@ -23,17 +23,18 @@ voxel:
   y_range: [-50.0, 50.0]
   z_range: [-3.0,   3.0]
   voxel_size: [0.25, 0.25]   # metres per pillar; 400×400 BEV
-  max_pillars: 6000
+  max_pillars: 4096           # was 6000; reduced for T4 (15 GB VRAM / 12 GB RAM)
   max_points_per_pillar: 20
 
 data:
   split: training
-  # LiDAR uses all 5 lasers automatically — no camera selection needed.
+  top_lidar_only: true        # use TOP lidar only; side lasers add ~4× memory, <5% detection value
+  # max_frames_per_seg: null  # uncomment + set integer to limit frames per segment
 
 train:
   total_segs: 20            # null = all segments in the split
   epochs_per_seg: 3
-  batch_size: 2             # 2 × 6000 pillars fits ~5 GB VRAM
+  batch_size: 1             # was 2; reduced to avoid OOM on Colab free T4
   lr: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 35.0

@@ -27,6 +27,7 @@ Prerequisites (Colab):
 """
 
 import argparse
+import gc
 import json
 import sys
 from pathlib import Path
@@ -149,10 +150,15 @@ class WaymoLiDARDataset(Dataset):
         toolkit:  ToolKit instance with an active segment assigned.
     """
 
-    def __init__(self, toolkit: ToolKit):
-        self.toolkit = toolkit
-        self.timestamps = toolkit.get_timestamps()
-        print(f'   {len(self.timestamps)} LiDAR frames in segment')
+    def __init__(self, toolkit: ToolKit, top_lidar_only: bool = True,
+                 max_frames: int | None = None):
+        self.toolkit        = toolkit
+        self.top_lidar_only = top_lidar_only
+        self.timestamps     = toolkit.get_timestamps()
+        if max_frames is not None:
+            self.timestamps = self.timestamps[:max_frames]
+        print(f'   {len(self.timestamps)} LiDAR frames in segment'
+              + ('  (TOP lidar only)' if top_lidar_only else ''))
 
     def __len__(self) -> int:
         return len(self.timestamps)
@@ -160,9 +166,14 @@ class WaymoLiDARDataset(Dataset):
     def __getitem__(self, i: int):
         ts = self.timestamps[i]
 
-        # ── Points: concatenate all lasers into (N, 4) ──────────────────────
+        # ── Points ──────────────────────────────────────────────────────────
         pts_list = self.toolkit.load_lidar_points_xyzi(ts)   # list[(N_l, 4)]
         if pts_list:
+            if self.top_lidar_only:
+                # TOP lidar (laser 1) always has far more returns than the 4
+                # single-beam side lasers; keeping only the largest laser array
+                # cuts per-frame memory ~4–5× with no meaningful accuracy cost.
+                pts_list = [max(pts_list, key=len)]
             points = np.concatenate(pts_list, axis=0).astype(np.float32)
         else:
             points = np.zeros((0, 4), dtype=np.float32)
@@ -326,7 +337,11 @@ def train(cfg: dict, drive_dir: Path):
 
         toolkit.assign_segment(seg)
         if task == 'lidar_3d_detection':
-            dataset = WaymoLiDARDataset(toolkit)
+            dataset = WaymoLiDARDataset(
+                toolkit,
+                top_lidar_only=cfg['data'].get('top_lidar_only', True),
+                max_frames=cfg['data'].get('max_frames_per_seg'),
+            )
         else:
             dataset = WaymoGCSDataset(toolkit, imgsz=img_size, cameras=cameras)
         loader  = DataLoader(
@@ -371,6 +386,15 @@ def train(cfg: dict, drive_dir: Path):
             )
 
         tracker.mark_done(seg)
+
+        # ── Free segment memory ───────────────────────────────────────────────
+        # The toolkit caches the full lidar Parquet (~1 GB) for the segment.
+        # Explicitly releasing dataset + loader allows Python to reclaim that
+        # memory before the next segment is assigned and its Parquet is loaded.
+        del dataset, loader
+        gc.collect()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
 
         # ── Save checkpoint ───────────────────────────────────────────────────
         if seg_num % train_cfg['save_every'] == 0 or not tracker.pending:
