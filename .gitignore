@@ -17,3 +17,6 @@ __pycache__/
 # Checkpoint / output dirs (created at runtime)
 runs/
 *.pt
+
+# Local on-demand Waymo segment cache
+.waymo_cache/

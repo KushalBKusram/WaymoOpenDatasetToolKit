@@ -41,15 +41,39 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **macOS / Apple Silicon:** `tensorflow` auto-selects the Metal build.
+### 3. Launch the local explorer (recommended)
 
-### 3. Open the EDA notebook
+```bash
+streamlit run app.py
+```
+
+The app is an explorer and run-report dashboard only: training stays a
+reliable, resumable CLI process. It streams selected Waymo frames from GCS,
+shows camera labels and LiDAR BEV views, and reads metrics written under a
+run directory. The Explorer starts without contacting GCS: paste a segment ID (or explicitly list segments), load its timestamp-only timeline, then choose a Camera-frame, LiDAR-frame, or full-segment-statistics workflow. Each GCS read is shown in a status panel. Selected workflow files are downloaded once into `.waymo_cache/` with per-file progress, then reused locally. LiDAR exploration also saves a timestamp index and decoded per-frame `.npz` cache; the default view uses TOP LiDAR and plots at most 100,000 points.
+
+### 4. Open the EDA notebook (optional)
 
 ```bash
 jupyter notebook notebooks/eda.ipynb
 ```
 
 Data streams from GCS — you see annotated frames in seconds.
+
+### Evaluation reports
+
+Training writes `config.json` and `metrics.json` into `--drive-dir`; the
+**Runs** page in the Streamlit app reads those artifacts. Evaluate a saved
+checkpoint with:
+
+```bash
+python evaluate.py --config configs/yolov8n.yaml --run-dir ./runs/waymo
+python evaluate.py --config configs/pointpillars.yaml --run-dir ./runs/waymo
+```
+
+Camera evaluation reports COCO-style 2-D mAP. The LiDAR report is a clearly
+labelled BEV axis-aligned IoU proxy; use Waymo's official evaluator for
+benchmark-quality rotated 3-D metrics.
 
 ---
 
@@ -74,6 +98,8 @@ WaymoOpenDatasetToolKit/
 │   ├── train.ipynb             # Colab training notebook — 2D camera detection
 │   └── train_lidar.ipynb       # Colab training notebook — 3D LiDAR detection
 ├── train.py                    # Config-driven training script
+├── evaluate.py                 # Checkpoint evaluation → JSON report
+├── app.py                      # Streamlit local explorer + run dashboard
 ├── main.py                     # CLI entry point (argparse)
 ├── scripts/
 │   └── download_data.sh        # Optional bulk GCS download helper

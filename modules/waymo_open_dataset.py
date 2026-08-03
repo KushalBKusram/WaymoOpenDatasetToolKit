@@ -7,11 +7,13 @@ All Parquet column names follow the official v2 naming convention:
 
 No waymo-open-dataset pip package is required. Data is read with
 dask/pandas/pyarrow and streamed directly from GCS.
-TensorFlow is used only for tf.io.gfile (GCS listing) and range-image decode.
+LiDAR range images are decoded with NumPy; no Waymo devkit is required.
 
 GCS layout:
   gs://waymo_open_dataset_v_2_0_0/<split>/<component>/<context_name>.parquet
 """
+
+from __future__ import annotations
 
 import os
 import pickle
@@ -19,8 +21,9 @@ import pickle
 import cv2
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 import dask.dataframe as dd
+import gcsfs
+
 
 
 # ---------------------------------------------------------------------------
@@ -186,13 +189,15 @@ class ToolKit:
 
     GCS_BUCKET = 'waymo_open_dataset_v_2_0_0'
 
-    def __init__(self, split: str = 'training', save_dir: str = './output'):
+    def __init__(self, split: str = 'training', save_dir: str = './output',
+                 cache_dir: str | None = './.waymo_cache'):
         assert split in ('training', 'validation', 'testing'), (
             f"split must be 'training', 'validation', or 'testing',"
             f" got '{split}'"
         )
         self.split = split
         self.save_dir = save_dir
+        self.cache_dir = cache_dir
         self.context_name: str | None = None
         self._df_cache: dict[str, pd.DataFrame] = {}
         self._setup_dirs()
@@ -215,12 +220,27 @@ class ToolKit:
             os.makedirs(d, exist_ok=True)
 
     def _gcs_path(self, component: str) -> str:
+        """Return a local cached component when available, otherwise GCS."""
+        if self.cache_dir:
+            local_path = os.path.join(
+                self.cache_dir, self.split, component,
+                f'{self.context_name}.parquet',
+            )
+            if os.path.isfile(local_path):
+                return local_path
         return (f'gs://{self.GCS_BUCKET}/{self.split}'
                 f'/{component}/{self.context_name}.parquet')
 
-    def _read(self, component: str) -> dd.DataFrame:
+    def _read(self, component: str, columns=None, filters=None) -> dd.DataFrame:
         """Return a lazy Dask DataFrame for one component of the segment."""
-        return dd.read_parquet(self._gcs_path(component))
+        return dd.read_parquet(self._gcs_path(component), columns=columns, filters=filters)
+
+    def _read_frame_rows(self, component: str, timestamp: int, camera_name: int | None = None) -> pd.DataFrame:
+        """Read only one frame from the local cache or GCS, without caching a full component."""
+        filters = [("key.frame_timestamp_micros", "==", timestamp)]
+        if camera_name is not None:
+            filters.append(("key.camera_name", "==", camera_name))
+        return self._read(component, filters=filters).compute()
 
     def _read_cached(self, component: str) -> pd.DataFrame:
         """Compute and cache a component DataFrame for the current segment.
@@ -257,13 +277,10 @@ class ToolKit:
 
     def list_segments(self) -> list[str]:
         """Return sorted list of all context names available for the split."""
-        pattern = (
-            f'gs://{self.GCS_BUCKET}/{self.split}/camera_image/*.parquet'
-        )
-        paths = tf.io.gfile.glob(pattern)
-        return sorted(
-            os.path.basename(p).replace('.parquet', '') for p in paths
-        )
+        filesystem = gcsfs.GCSFileSystem()
+        pattern = f'{self.GCS_BUCKET}/{self.split}/camera_image/*.parquet'
+        paths = filesystem.glob(pattern)
+        return sorted(os.path.basename(path).replace('.parquet', '') for path in paths)
 
     def assign_segment(self, context_name: str):
         """Set the active segment; clears the DataFrame cache."""
@@ -274,10 +291,10 @@ class ToolKit:
     # Notebook mode — load_* helpers
     # -----------------------------------------------------------------------
 
-    def get_timestamps(self) -> list[int]:
-        """Sorted list of unique frame timestamps in the segment."""
+    def get_timestamps(self, component: str = 'camera_image') -> list[int]:
+        """Sorted timestamps from one component; reads only its timestamp column."""
         self._assert_segment()
-        df = self._read_cached('camera_image')
+        df = self._read(component, columns=["key.frame_timestamp_micros"]).compute()
         return sorted(df['key.frame_timestamp_micros'].unique().tolist())
 
     def load_camera_frame(
@@ -293,11 +310,8 @@ class ToolKit:
             (H, W, 3) uint8 BGR array.
         """
         self._assert_segment()
-        df = self._read_cached('camera_image')
-        row = df[
-            (df['key.frame_timestamp_micros'] == timestamp) &
-            (df['key.camera_name'] == camera_name)
-        ].iloc[0]
+        df = self._read_frame_rows("camera_image", timestamp, camera_name)
+        row = df.iloc[0]
         jpeg = row[f'{_C_IMG}.image']
         return cv2.imdecode(
             np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR
@@ -308,19 +322,16 @@ class ToolKit:
     ) -> pd.DataFrame:
         """Return camera-box rows for one (timestamp, camera) pair."""
         self._assert_segment()
-        df = self._read_cached('camera_box')
-        return df[
-            (df['key.frame_timestamp_micros'] == timestamp) &
-            (df['key.camera_name'] == camera_name)
-        ].copy()
+        return self._read_frame_rows("camera_box", timestamp, camera_name).copy()
 
     def load_lidar_boxes(self, timestamp: int) -> pd.DataFrame:
         """Return LiDAR-box rows for one timestamp."""
         self._assert_segment()
-        df = self._read_cached('lidar_box')
-        return df[df['key.frame_timestamp_micros'] == timestamp].copy()
+        return self._read_frame_rows("lidar_box", timestamp).copy()
 
-    def load_lidar_points(self, timestamp: int) -> list[np.ndarray]:
+    def load_lidar_points(
+        self, timestamp: int, top_lidar_only: bool = False,
+    ) -> list[np.ndarray]:
         """Convert range images to point clouds for one timestamp.
 
         Returns:
@@ -328,10 +339,13 @@ class ToolKit:
             frame.
         """
         self._assert_segment()
-        lidar_df = self._read_cached('lidar')
-        cal_df = self._read_cached('lidar_calibration')
+        lidar_df = self._read_frame_rows("lidar", timestamp)
+        cal_df = self._read_cached("lidar_calibration")
 
         group = lidar_df[lidar_df['key.frame_timestamp_micros'] == timestamp]
+        if top_lidar_only:
+            top_group = group[group['key.laser_name'] == 1]
+            group = top_group if not top_group.empty else group
         points_list = []
         for _, row in group.iterrows():
             laser_name = row['key.laser_name']
@@ -356,8 +370,8 @@ class ToolKit:
             List of (N, 4) float32 arrays [x, y, z, intensity], one per laser.
         """
         self._assert_segment()
-        lidar_df = self._read_cached('lidar')
-        cal_df   = self._read_cached('lidar_calibration')
+        lidar_df = self._read_frame_rows("lidar", timestamp)
+        cal_df   = self._read_cached("lidar_calibration")
 
         group = lidar_df[lidar_df['key.frame_timestamp_micros'] == timestamp]
         points_list: list[np.ndarray] = []
@@ -493,7 +507,7 @@ class ToolKit:
 
             # Build the valid mask from the paired range image so array sizes match
             range_image = ToolKit._decode_range_image(lidar_row)
-            valid_flat  = tf.reshape(range_image[..., 0] > 0, [-1]).numpy()
+            valid_flat  = (range_image[..., 0] > 0).reshape(-1)
             n_valid = int(valid_flat.sum())
 
             seg_rows = seg_group[seg_group['key.laser_name'] == laser_name]
@@ -511,11 +525,7 @@ class ToolKit:
             if isinstance(seg_values, np.ndarray) and seg_values.dtype == np.int32:
                 seg_arr = seg_values.reshape(seg_shape)
             else:
-                seg_arr = (
-                    tf.io.decode_raw(seg_values, tf.int32)
-                    .numpy()
-                    .reshape(seg_shape)
-                )
+                seg_arr = np.frombuffer(seg_values, dtype=np.int32).reshape(seg_shape)
             semantic_flat = seg_arr[..., 0].reshape(-1)
             seg_list.append(semantic_flat[valid_flat].astype(np.int32))
 
@@ -858,132 +868,65 @@ class ToolKit:
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def _get_beam_inclinations(cal_row: pd.Series, height: int) -> 'tf.Tensor':
-        """Return (height,) float32 beam-inclination angles for one laser.
-
-        The TOP lidar stores per-beam inclination values directly.
-        Side/rear lasers (laser_name 2-5) store only min/max; we linearly
-        interpolate from max (top) to min (bottom) to match scan order.
-        """
+    def _get_beam_inclinations(cal_row: pd.Series, height: int) -> np.ndarray:
+        """Return (height,) float32 beam-inclination angles for one laser."""
         incl_vals = cal_row[f'{_L_CAL}.beam_inclination.values']
         if (incl_vals is not None
                 and hasattr(incl_vals, '__len__')
                 and len(incl_vals) == height):
-            return tf.cast(incl_vals, tf.float32)
+            return np.asarray(incl_vals, dtype=np.float32)
         incl_min = float(cal_row[f'{_L_CAL}.beam_inclination.min'])
         incl_max = float(cal_row[f'{_L_CAL}.beam_inclination.max'])
-        return tf.cast(tf.linspace(incl_max, incl_min, height), tf.float32)
+        return np.linspace(incl_max, incl_min, height, dtype=np.float32)
 
     @staticmethod
-    def _decode_range_image(lidar_row: pd.Series) -> 'tf.Tensor':
-        """Decode range_image_return1 from a lidar Parquet row.
-
-        In Waymo v2 Parquet the values column is already a float32 ndarray
-        (not raw bytes), so tf.io.decode_raw is NOT needed.
-
-        Returns:
-            (H, W, C) float32 tensor — channels are
-            [range_m, intensity, elongation, is_in_nlz].
-        """
-        ri_shape  = lidar_row[f'{_L}.range_image_return1.shape']   # int32 [H, W, C]
-        ri_values = lidar_row[f'{_L}.range_image_return1.values']   # float32 ndarray
-        return tf.constant(ri_values.reshape(ri_shape))
+    def _decode_range_image(lidar_row: pd.Series) -> np.ndarray:
+        """Return first-return range image as an (H, W, C) float32 ndarray."""
+        ri_shape = lidar_row[f'{_L}.range_image_return1.shape']
+        ri_values = lidar_row[f'{_L}.range_image_return1.values']
+        return np.asarray(ri_values, dtype=np.float32).reshape(ri_shape)
 
     @staticmethod
     def _range_image_to_points(
         lidar_row: pd.Series,
         cal_row: pd.Series,
     ) -> np.ndarray:
-        """Convert one LiDAR's first-return range image to (N, 3) xyz.
-
-        Args:
-            lidar_row: Row from the 'lidar' component DataFrame.
-            cal_row:   Matching row from the 'lidar_calibration' DataFrame.
-
-        The standard spherical-to-Cartesian conversion is used:
-            x = r * cos(inc) * cos(az)
-            y = r * cos(inc) * sin(az)
-            z = r * sin(inc)
-        followed by the sensor extrinsic (sensor -> vehicle frame).
-        """
-        range_image = ToolKit._decode_range_image(lidar_row)   # (H, W, C)
-        valid_mask  = range_image[..., 0] > 0                  # channel 0 = range
-
-        ri_shape       = lidar_row[f'{_L}.range_image_return1.shape']
-        height, width  = int(ri_shape[0]), int(ri_shape[1])
-
-        # --- spherical coordinates ---
-        azimuth     = tf.cast(tf.linspace(np.pi, -np.pi, width), tf.float32)
-        inclination = ToolKit._get_beam_inclinations(cal_row, height)
-
-        inc_map = tf.broadcast_to(tf.reshape(inclination, [-1, 1]), [height, width])
-        az_map  = tf.broadcast_to(azimuth, [height, width])
-
-        r       = range_image[..., 0]
-        cos_inc = tf.cos(inc_map)
-        x = r * cos_inc * tf.cos(az_map)
-        y = r * cos_inc * tf.sin(az_map)
-        z = r * tf.sin(inc_map)
-
-        # --- apply sensor extrinsic (sensor -> vehicle frame) ---
-        ones        = tf.ones_like(x)
-        xyz1        = tf.reshape(tf.stack([x, y, z, ones], axis=-1), [-1, 4])
-        extrinsic   = tf.cast(
-            tf.reshape(cal_row[f'{_L_CAL}.extrinsic.transform'], [4, 4]),
-            tf.float32,
-        )
-        xyz_vehicle = tf.matmul(xyz1, tf.transpose(extrinsic))[:, :3]
-
-        valid_flat = tf.reshape(valid_mask, [-1])
-        return tf.boolean_mask(xyz_vehicle, valid_flat).numpy()
+        """Convert one LiDAR range image to vehicle-frame (N, 3) XYZ with NumPy."""
+        range_image = ToolKit._decode_range_image(lidar_row)
+        ranges = range_image[..., 0]
+        valid = ranges > 0
+        height, width, _ = range_image.shape
+        inclination = ToolKit._get_beam_inclinations(cal_row, height)[:, None]
+        azimuth = np.linspace(np.pi, -np.pi, width, dtype=np.float32)[None, :]
+        cos_inc = np.cos(inclination)
+        xyz_sensor = np.stack([
+            ranges * cos_inc * np.cos(azimuth),
+            ranges * cos_inc * np.sin(azimuth),
+            ranges * np.sin(inclination),
+        ], axis=-1)
+        extrinsic = np.asarray(cal_row[f'{_L_CAL}.extrinsic.transform'], dtype=np.float32).reshape(4, 4)
+        xyz_vehicle = xyz_sensor.reshape(-1, 3) @ extrinsic[:3, :3].T + extrinsic[:3, 3]
+        return xyz_vehicle[valid.reshape(-1)].astype(np.float32, copy=False)
 
     @staticmethod
     def _range_image_to_points_xyzi(
         lidar_row: pd.Series,
         cal_row: pd.Series,
     ) -> np.ndarray:
-        """Convert one LiDAR's first-return range image to (N, 4) xyzi.
-
-        Identical to _range_image_to_points() but appends normalised
-        intensity (range-image channel 1) as the fourth column.
-
-        Args:
-            lidar_row: Row from the 'lidar' component DataFrame.
-            cal_row:   Matching row from the 'lidar_calibration' DataFrame.
-
-        Returns:
-            (N, 4) float32 array — [x, y, z, intensity].
-        """
-        range_image = ToolKit._decode_range_image(lidar_row)   # (H, W, C)
-        valid_mask  = range_image[..., 0] > 0
-
-        ri_shape       = lidar_row[f'{_L}.range_image_return1.shape']
-        height, width  = int(ri_shape[0]), int(ri_shape[1])
-
-        azimuth     = tf.cast(tf.linspace(np.pi, -np.pi, width), tf.float32)
-        inclination = ToolKit._get_beam_inclinations(cal_row, height)
-
-        inc_map = tf.broadcast_to(tf.reshape(inclination, [-1, 1]), [height, width])
-        az_map  = tf.broadcast_to(azimuth, [height, width])
-
-        r       = range_image[..., 0]
-        cos_inc = tf.cos(inc_map)
-        x = r * cos_inc * tf.cos(az_map)
-        y = r * cos_inc * tf.sin(az_map)
-        z = r * tf.sin(inc_map)
-
-        ones        = tf.ones_like(x)
-        xyz1        = tf.reshape(tf.stack([x, y, z, ones], axis=-1), [-1, 4])
-        extrinsic   = tf.cast(
-            tf.reshape(cal_row[f'{_L_CAL}.extrinsic.transform'], [4, 4]),
-            tf.float32,
-        )
-        xyz_vehicle = tf.matmul(xyz1, tf.transpose(extrinsic))[:, :3]
-
-        # intensity — channel 1 of the range image (reflectivity, unnormalized)
-        intensity  = tf.reshape(range_image[..., 1], [-1])
-        valid_flat = tf.reshape(valid_mask, [-1])
-
-        xyz_valid = tf.boolean_mask(xyz_vehicle, valid_flat)
-        i_valid   = tf.boolean_mask(intensity,   valid_flat)
-        return tf.concat([xyz_valid, tf.expand_dims(i_valid, 1)], axis=1).numpy()
+        """Convert one LiDAR range image to vehicle-frame (N, 4) XYZI with NumPy."""
+        range_image = ToolKit._decode_range_image(lidar_row)
+        ranges = range_image[..., 0]
+        valid = ranges > 0
+        height, width, _ = range_image.shape
+        inclination = ToolKit._get_beam_inclinations(cal_row, height)[:, None]
+        azimuth = np.linspace(np.pi, -np.pi, width, dtype=np.float32)[None, :]
+        cos_inc = np.cos(inclination)
+        xyz_sensor = np.stack([
+            ranges * cos_inc * np.cos(azimuth),
+            ranges * cos_inc * np.sin(azimuth),
+            ranges * np.sin(inclination),
+        ], axis=-1)
+        extrinsic = np.asarray(cal_row[f'{_L_CAL}.extrinsic.transform'], dtype=np.float32).reshape(4, 4)
+        xyz_vehicle = xyz_sensor.reshape(-1, 3) @ extrinsic[:3, :3].T + extrinsic[:3, 3]
+        intensity = range_image[..., 1].reshape(-1, 1)
+        return np.concatenate([xyz_vehicle[valid.reshape(-1)], intensity[valid.reshape(-1)]], axis=1).astype(np.float32, copy=False)

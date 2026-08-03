@@ -23,12 +23,13 @@ colorize_lidar_by_class  Build an Open3D PointCloud coloured by semantic class.
 plot_ego_trajectory      Plot the ego-vehicle GPS/world trajectory from poses.
 """
 
+from __future__ import annotations
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Polygon as MplPolygon
-import open3d as o3d
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +153,7 @@ def _box3d_bev_corners(cx, cy, sx, sy, heading) -> np.ndarray:
 
 def _box3d_open3d_lineset(cx, cy, cz, sx, sy, sz, heading,
                           color=(0.0, 1.0, 0.0)) -> o3d.geometry.LineSet:
+    import open3d as o3d
     """Return an Open3D LineSet wireframe for one oriented 3-D bounding box."""
     dx, dy, dz = sx / 2, sy / 2, sz / 2
     local = np.array([
@@ -221,7 +223,8 @@ def draw_camera_boxes(image: np.ndarray, boxes_df,
 def plot_bev(points_list: list, boxes_df=None,
              range_m: float = 75.0,
              figsize: tuple = (10, 10),
-             point_size: float = 0.3) -> plt.Figure:
+             point_size: float = 0.3,
+             max_points: int | None = 100_000) -> plt.Figure:
     """
     Bird's-eye-view of the LiDAR point cloud with optional 3-D box footprints.
 
@@ -241,6 +244,9 @@ def plot_bev(points_list: list, boxes_df=None,
     # --- Points coloured by height ---
     if points_list:
         all_pts = np.vstack(points_list)
+        if max_points is not None and len(all_pts) > max_points:
+            indices = np.linspace(0, len(all_pts) - 1, max_points, dtype=np.int64)
+            all_pts = all_pts[indices]
         z = all_pts[:, 2]
         z_norm = np.clip((z - z.min()) / ((z.max() - z.min()) + 1e-6), 0, 1)
         ax.scatter(
@@ -292,8 +298,153 @@ def plot_bev(points_list: list, boxes_df=None,
     fig.tight_layout()
     return fig
 
+def plot_bev_interactive(
+    points_list: list,
+    boxes_df=None,
+    range_m: float = 75.0,
+    max_points: int | None = 100_000,
+):
+    """Build an interactive WebGL bird's-eye-view figure for Streamlit."""
+    import plotly.graph_objects as go
+
+    figure = go.Figure()
+    if points_list:
+        points = np.vstack(points_list)
+        if max_points is not None and len(points) > max_points:
+            indices = np.linspace(0, len(points) - 1, max_points, dtype=np.int64)
+            points = points[indices]
+        figure.add_trace(go.Scattergl(
+            x=points[:, 0], y=points[:, 1], mode='markers', name='LiDAR points',
+            marker={'size': 2, 'color': points[:, 2], 'colorscale': 'Plasma', 'opacity': 0.75, 'colorbar': {'title': 'Z / m'}},
+            hovertemplate='x=%{x:.2f} m<br>y=%{y:.2f} m<br>z=%{marker.color:.2f} m<extra></extra>',
+        ))
+
+    shown_labels: set[str] = set()
+    if boxes_df is not None and len(boxes_df):
+        for _, row in boxes_df.iterrows():
+            label = LABEL_TYPES.get(int(row[f'{_L_BOX}.type']), 'TYPE_UNKNOWN')
+            rgb = LABEL_COLORS_RGB.get(label, (1, 1, 1))
+            color = f'rgb({int(rgb[0] * 255)},{int(rgb[1] * 255)},{int(rgb[2] * 255)})'
+            corners = _box3d_bev_corners(
+                float(row[f'{_L_BOX}.box.center.x']), float(row[f'{_L_BOX}.box.center.y']),
+                float(row[f'{_L_BOX}.box.size.x']), float(row[f'{_L_BOX}.box.size.y']),
+                float(row[f'{_L_BOX}.box.heading']),
+            )
+            closed = np.vstack([corners, corners[0]])
+            figure.add_trace(go.Scattergl(
+                x=closed[:, 0], y=closed[:, 1], mode='lines', name=label.replace('TYPE_', ''),
+                legendgroup=label, showlegend=label not in shown_labels,
+                line={'color': color, 'width': 2},
+                hovertemplate=f'{label.replace("TYPE_", "")}<extra></extra>',
+            ))
+            shown_labels.add(label)
+
+    figure.update_layout(
+        template='plotly_dark', height=760, margin={'l': 20, 'r': 20, 't': 50, 'b': 20},
+        title="Interactive LiDAR Bird's-Eye View",
+        xaxis={'title': 'X / m (forward)', 'range': [-range_m, range_m], 'scaleanchor': 'y'},
+        yaxis={'title': 'Y / m (left)', 'range': [-range_m, range_m]},
+        legend={'title': 'Layers'},
+        dragmode='pan',
+    )
+    return figure
+
+
+def plot_lidar_3d_interactive(
+    points_list: list,
+    boxes_df=None,
+    range_m: float = 75.0,
+    max_points: int | None = 100_000,
+):
+    """Build an orbitable, browser-based WebGL LiDAR point-cloud figure."""
+    import plotly.graph_objects as go
+
+    figure = go.Figure()
+    if points_list:
+        points = np.vstack(points_list)
+        # The vehicle-frame Z origin is around the sensor/vehicle, not the road.
+        # A low percentile gives a useful road reference without changing LiDAR geometry.
+        ground_z = float(np.percentile(points[:, 2], 3))
+        figure.add_trace(go.Mesh3d(
+            x=[-range_m, range_m, range_m, -range_m],
+            y=[-range_m, -range_m, range_m, range_m],
+            z=[ground_z, ground_z, ground_z, ground_z],
+            i=[0, 0], j=[1, 2], k=[2, 3],
+            name='Ground reference', legendgroup='ground', showlegend=True,
+            color='rgb(70, 75, 85)', opacity=0.32, hoverinfo='skip',
+        ))
+        if max_points is not None and len(points) > max_points:
+            indices = np.linspace(0, len(points) - 1, max_points, dtype=np.int64)
+            points = points[indices]
+        figure.add_trace(go.Scatter3d(
+            x=points[:, 0], y=points[:, 1], z=points[:, 2], mode='markers', name='LiDAR points',
+            marker={
+                'size': 1.5, 'color': points[:, 2], 'colorscale': 'Plasma', 'opacity': 0.72,
+                'colorbar': {'title': 'Z / m'},
+            },
+            hovertemplate='x=%{x:.2f} m<br>y=%{y:.2f} m<br>z=%{z:.2f} m<extra></extra>',
+        ))
+
+    shown_labels: set[str] = set()
+    if boxes_df is not None and len(boxes_df):
+        edges = np.array([
+            [0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4],
+            [0, 4], [1, 5], [2, 6], [3, 7],
+        ])
+        for _, row in boxes_df.iterrows():
+            label = LABEL_TYPES.get(int(row[f'{_L_BOX}.type']), 'TYPE_UNKNOWN')
+            if label == 'TYPE_UNKNOWN':
+                continue
+            rgb = LABEL_COLORS_RGB.get(label, (1, 1, 1))
+            color = f'rgb({int(rgb[0] * 255)},{int(rgb[1] * 255)},{int(rgb[2] * 255)})'
+            cx, cy, cz = (float(row[f'{_L_BOX}.box.center.{axis}']) for axis in ('x', 'y', 'z'))
+            sx, sy, sz = (float(row[f'{_L_BOX}.box.size.{axis}']) for axis in ('x', 'y', 'z'))
+            footprint = _box3d_bev_corners(cx, cy, sx, sy, float(row[f'{_L_BOX}.box.heading']))
+            corners = np.vstack([
+                np.column_stack([footprint, np.full(4, cz - sz / 2)]),
+                np.column_stack([footprint, np.full(4, cz + sz / 2)]),
+            ])
+            segments = []
+            for start, end in edges:
+                segments.extend((corners[start], corners[end], [np.nan, np.nan, np.nan]))
+            segments = np.asarray(segments)
+            object_id = str(row.get('key.laser_object_id', 'Unavailable'))
+            distance_m = float(np.hypot(cx, cy))
+            box_details = np.tile(
+                np.array([object_id, distance_m, sx, sy, sz, cx, cy, cz], dtype=object),
+                (len(segments), 1),
+            )
+            figure.add_trace(go.Scatter3d(
+                x=segments[:, 0], y=segments[:, 1], z=segments[:, 2], mode='lines',
+                name=label.replace('TYPE_', ''), legendgroup=label, showlegend=label not in shown_labels,
+                line={'color': color, 'width': 5}, customdata=box_details,
+                hovertemplate=(
+                    f'<b>{label.replace("TYPE_", "")}</b>'
+                    '<br>Object ID: %{customdata[0]}'
+                    '<br>Range: %{customdata[1]:.1f} m'
+                    '<br>Size (L × W × H): %{customdata[2]:.1f} × %{customdata[3]:.1f} × %{customdata[4]:.1f} m'
+                    '<br>Center (X, Y, Z): %{customdata[5]:.1f}, %{customdata[6]:.1f}, %{customdata[7]:.1f} m'
+                    '<extra></extra>'
+                ),
+            ))
+            shown_labels.add(label)
+
+    figure.update_layout(
+        template='plotly_dark', height=760, margin={'l': 20, 'r': 20, 't': 50, 'b': 20},
+        title='Interactive LiDAR 3D Point Cloud', showlegend=False,
+        scene={
+            'xaxis': {'title': 'X / m (forward)', 'range': [-range_m, range_m]},
+            'yaxis': {'title': 'Y / m (left)', 'range': [-range_m, range_m]},
+            'zaxis': {'title': 'Z / m'},
+            'aspectmode': 'data',
+            'camera': {'eye': {'x': 1.35, 'y': -1.35, 'z': 0.8}},
+        },
+    )
+    return figure
+
 
 def build_open3d_scene(points_list: list, boxes_df=None) -> list:
+    import open3d as o3d
     """
     Assemble an Open3D scene: coloured PointCloud + box LineSet wireframes.
 
@@ -562,6 +713,7 @@ def colorize_lidar_by_class(
     seg_labels_list: list,
     label_colors: dict | None = None,
 ) -> o3d.geometry.PointCloud:
+    import open3d as o3d
     """Build an Open3D PointCloud where each point is coloured by semantic class.
 
     Args:

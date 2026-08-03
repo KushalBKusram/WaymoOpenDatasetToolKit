@@ -4,12 +4,7 @@
 # cannot be installed on macOS. We access v2 Parquet files directly with
 # pandas/pyarrow/dask, so the waymo package is NOT required.
 #
-# TensorFlow IS still required for:
-#   - tf.io.gfile.glob  → GCS file listing with ADC credentials
-#   - tf.io.decode_raw  → range-image tensor decoding
-# On Apple Silicon: `pip install tensorflow` auto-selects the Metal build.
-
-tensorflow
+# TensorFlow is not required: GCS listing and LiDAR decoding use gcsfs and NumPy.
 
 # Parquet + GCS streaming (no local download required)
 dask[dataframe]
@@ -23,6 +18,7 @@ opencv-python
 open3d
 numpy
 matplotlib
+plotly
 
 # Training + evaluation (optional — only needed for train.ipynb)
 ultralytics
@@ -32,3 +28,6 @@ pyyaml
 # Notebook
 jupyter
 ipykernel
+
+# Local explorer and evaluation dashboard
+streamlit
