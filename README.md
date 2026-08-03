@@ -48,9 +48,24 @@ streamlit run app.py
 ```
 
 The app is an explorer and run-report dashboard only: training stays a
-reliable, resumable CLI process. It streams selected Waymo frames from GCS,
-shows camera labels and LiDAR BEV views, and reads metrics written under a
-run directory. The Explorer starts without contacting GCS: paste a segment ID (or explicitly list segments), load its timestamp-only timeline, then choose a Camera-frame, LiDAR-frame, or full-segment-statistics workflow. Each GCS read is shown in a status panel. Selected workflow files are downloaded once into `.waymo_cache/` with per-file progress, then reused locally. LiDAR exploration also saves a timestamp index and decoded per-frame `.npz` cache; the default view uses TOP LiDAR and plots at most 100,000 points.
+reliable, resumable CLI process. It first validates local Google Application
+Default Credentials without contacting GCS, then lets you browse dataset
+segments ten at a time and choose one focused workflow:
+
+- **Camera Frames** — five synchronized, labeled camera views in a mosaic;
+  open an individual view at full resolution when needed.
+- **LiDAR Frames** — an interactive browser-based 3-D point cloud with a
+  ground-reference surface, 3-D label boxes, hover details, frame navigation,
+  and playback. A synchronized camera mosaic can be loaded for the active
+  LiDAR timestamp.
+- **Segment Analysis** — class balance, frame density, distance coverage, and
+  per-class label-size summaries for the selected segment.
+
+Selected workflow files are downloaded once into `.waymo_cache/` with per-file
+progress, then reused locally. LiDAR exploration also persists its timestamp
+index and decoded per-frame `.npz` cache. The **Local Cache** panel reports the
+selected segment's storage use and can safely remove only that segment after a
+confirmation step.
 
 ### 4. Open the EDA notebook (optional)
 
@@ -91,6 +106,8 @@ WaymoOpenDatasetToolKit/
 │   ├── yolov8_detector.py      # YOLOv8Detector implementation
 │   └── pointpillars_detector.py # PointPillarsDetector implementation
 ├── modules/
+│   ├── run_artifacts.py        # Training/evaluation JSON artifacts for the Runs page
+│   ├── segment_cache.py        # On-demand local segment and decoded-frame cache
 │   ├── waymo_open_dataset.py   # ToolKit class — GCS reader + all 12 components
 │   └── visualize.py            # Visualisation utilities (camera, LiDAR, seg, poses)
 ├── notebooks/
