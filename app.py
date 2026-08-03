@@ -448,44 +448,124 @@ def show_explorer() -> None:
             st.rerun()
 
 
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _discover_runs(run_root: Path) -> list[Path]:
+    """Return direct child run directories plus a root that is itself a run."""
+    candidates = [run_root] if (run_root / "config.json").exists() else []
+    candidates.extend(path for path in run_root.iterdir() if path.is_dir() and (path / "config.json").exists())
+    return sorted(set(candidates), key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def _comparison_row(run_dir: Path) -> dict:
+    config = _read_json(run_dir / "config.json")
+    report = _read_json(run_dir / "evaluation.json")
+    inference = report.get("inference", {})
+    errors = report.get("error_analysis", {}).get("per_class", [])
+    return {
+        "Run": run_dir.name,
+        "Task": report.get("task", config.get("task", "not evaluated")),
+        "Detector": config.get("model", {}).get("type", ""),
+        "Metric": report.get("metric", "not evaluated"),
+        "Score": report.get("map", report.get("map_proxy")),
+        "mAP@0.50": report.get("map_50"),
+        "Frames": report.get("frames"),
+        "Mean Infer ms": inference.get("mean_ms"),
+        "P95 Infer ms": inference.get("p95_ms"),
+        "FPS": inference.get("fps"),
+        "TP": sum(row.get("true_positives", 0) for row in errors),
+        "FP": sum(row.get("false_positives", 0) for row in errors),
+        "FN": sum(row.get("false_negatives", 0) for row in errors),
+        "Path": str(run_dir),
+    }
+
+
 def show_runs() -> None:
-    st.title("Evaluation and Run Reports")
-    run_root = Path(st.sidebar.text_input("Run Directory", "./runs/waymo"))
+    st.title("Run Analysis")
+    run_root = Path(st.sidebar.text_input("Runs Root", "./runs"))
     if not run_root.exists():
-        st.info("No run artifacts found yet. Train with `--drive-dir` or run `evaluate.py` first.")
+        st.info("No run directory found. Train with `--drive-dir` and then run `evaluate.py`.")
         return
-    candidates = [run_root] + sorted((p for p in run_root.iterdir() if p.is_dir()), reverse=True)
-    run_dir = st.selectbox("Run", candidates, format_func=lambda p: str(p))
+    candidates = _discover_runs(run_root)
+    if not candidates:
+        st.info("No run artifacts found under this directory yet.")
+        return
+
+    comparison = pd.DataFrame([_comparison_row(path) for path in candidates])
+    evaluated = comparison[comparison["Score"].notna()].copy()
+    st.subheader("Model Comparison")
+    st.caption("Scores are comparable only within the same task and evaluation protocol. LiDAR scores are BEV proxy AP, not official Waymo mAP.")
+    if evaluated.empty:
+        st.info("Runs were found, but none has `evaluation.json` yet. Run `evaluate.py` to populate comparison metrics.")
+    else:
+        display_columns = ["Run", "Task", "Detector", "Score", "mAP@0.50", "Frames", "Mean Infer ms", "P95 Infer ms", "FPS", "TP", "FP", "FN"]
+        st.dataframe(evaluated[display_columns], use_container_width=True, hide_index=True)
+        chart_data = evaluated.set_index("Run")[["Score"]]
+        st.bar_chart(chart_data)
+
+    run_dir = st.selectbox("Inspect Run", candidates, format_func=lambda path: str(path))
+    config = _read_json(run_dir / "config.json")
+    report = _read_json(run_dir / "evaluation.json")
     artifacts = RunArtifacts(run_dir)
     metrics = artifacts.read_metrics()
-    config_path = run_dir / "config.json"
-    if config_path.exists():
-        with st.expander("Run Configuration"):
-            st.json(json.loads(config_path.read_text()))
-    events = metrics.get("events", [])
-    if not events:
-        st.info("This run has no recorded metrics yet.")
-        return
-    table = pd.DataFrame(events)
-    st.dataframe(table, use_container_width=True, hide_index=True)
-    train_rows = table[table["type"] == "train_epoch"] if "type" in table else pd.DataFrame()
-    if not train_rows.empty and "loss" in train_rows:
-        st.subheader("Training Loss")
-        st.line_chart(train_rows.set_index("global_epoch")["loss"])
-    eval_rows = table[table["type"] == "evaluation"] if "type" in table else pd.DataFrame()
-    if not eval_rows.empty:
-        st.subheader("Evaluation Summary")
-        st.json(eval_rows.iloc[-1].dropna().to_dict())
+
+    if config:
+        with st.expander("Resolved Configuration"):
+            st.json(config)
+
+    if report:
+        st.subheader("Selected Evaluation")
+        score_name = "COCO mAP" if "map" in report else "BEV Proxy AP"
+        score = report.get("map", report.get("map_proxy"))
+        inference = report.get("inference", {})
+        metric_columns = st.columns(4)
+        metric_columns[0].metric(score_name, "—" if score is None else f"{score:.4f}")
+        metric_columns[1].metric("Frames", report.get("frames", "—"))
+        metric_columns[2].metric("Mean inference", "—" if inference.get("mean_ms") is None else f"{inference['mean_ms']:.1f} ms")
+        metric_columns[3].metric("Throughput", "—" if inference.get("fps") is None else f"{inference['fps']:.1f} FPS")
+
+        per_class = pd.DataFrame(report.get("per_class", []))
+        if not per_class.empty:
+            st.subheader("Per-Class Metrics")
+            metric_column = "map" if "map" in per_class.columns else "ap_proxy"
+            if metric_column in per_class.columns:
+                st.bar_chart(per_class.set_index("class_name")[[metric_column]])
+            st.dataframe(per_class, use_container_width=True, hide_index=True)
+
+        errors = pd.DataFrame(report.get("error_analysis", {}).get("per_class", []))
+        if not errors.empty:
+            st.subheader("Operating-Point Error Analysis")
+            match_iou = report.get("error_analysis", {}).get("match_iou")
+            st.caption(f"Greedy class-aware matches at IoU {match_iou}. These counts complement, but do not replace, mAP.")
+            st.bar_chart(errors.set_index("class_name")[["true_positives", "false_positives", "false_negatives"]])
+            st.dataframe(errors, use_container_width=True, hide_index=True)
+
         report_path = run_dir / "evaluation.json"
-        if report_path.exists():
-            st.download_button("Download evaluation JSON", report_path.read_text(), file_name="evaluation.json")
+        st.download_button("Download evaluation JSON", report_path.read_text(), file_name=f"{run_dir.name}-evaluation.json")
+    else:
+        st.info("This run has no evaluation report yet.")
+
+    events = metrics.get("events", [])
+    if events:
+        table = pd.DataFrame(events)
+        train_rows = table[table["type"] == "train_epoch"] if "type" in table else pd.DataFrame()
+        if not train_rows.empty and "loss" in train_rows:
+            st.subheader("Training Loss")
+            st.line_chart(train_rows.set_index("global_epoch")[["loss"]])
+        with st.expander("Raw Run Events"):
+            st.dataframe(table, use_container_width=True, hide_index=True)
+
     samples_dir = run_dir / "evaluation_samples"
-    if samples_dir.exists():
-        samples = sorted(samples_dir.glob("*.jpg"))
-        if samples:
-            st.subheader("Prediction Review")
-            st.caption("Ground truth is on the left; prediction is on the right.")
-            st.image([str(path) for path in samples], caption=[path.name for path in samples], width=520)
+    samples = sorted(samples_dir.glob("*.jpg")) if samples_dir.exists() else []
+    if samples:
+        st.subheader("Prediction Review")
+        st.caption("Ground truth is on the left; prediction is on the right.")
+        st.image([str(path) for path in samples], caption=[path.name for path in samples], width=520)
 
 
 page = st.sidebar.radio("Page", ["Explorer", "Runs"])

@@ -229,6 +229,22 @@ python evaluate.py --config configs/centerpoint.yaml \
   --run-dir ./runs/centerpoint-baseline --max-frames 100
 ```
 
+Every `evaluation.json` includes:
+
+- primary score (`map` for camera/fusion or `map_proxy` for LiDAR), plus the
+  evaluation protocol and frame count;
+- per-class mAP or AP proxy, ground-truth count, and prediction count;
+- class-aware TP/FP/FN, precision, and recall at `--match-iou` (default 0.5);
+- prediction-only mean, median, and p95 latency plus throughput; and
+- optional side-by-side ground-truth/prediction review images in
+  `evaluation_samples/`.
+
+The **Runs** page in the Streamlit app discovers evaluated runs under `./runs`
+and shows a cross-run comparison table, selected-run training loss, per-class
+metrics, operating-point error counts, latency, and review images. Compare
+only runs with the same task, validation scope, camera selection, confidence
+threshold, and evaluation protocol.
+
 Camera and fusion reports are COCO-style 2-D mAP. LiDAR reports are explicitly
 **BEV axis-aligned AP proxies**, not official Waymo rotated 3-D mAP. Do not use
 them for benchmark or competition claims; integrating the official Waymo
