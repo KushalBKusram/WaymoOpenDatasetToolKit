@@ -1,0 +1,42 @@
+# Pillar-based CenterPoint-style 3-D detector (anchor-free heatmap head).
+name: centerpoint
+task: lidar_3d_detection
+
+model:
+  type: CenterPointDetector
+  num_classes: 3
+  pfn_out: 64
+  class_names: [vehicle, pedestrian, cyclist]
+
+voxel:
+  x_range: [-50.0, 50.0]
+  y_range: [-50.0, 50.0]
+  z_range: [-3.0, 3.0]
+  voxel_size: [0.25, 0.25]
+  max_pillars: 4096
+  max_points_per_pillar: 20
+
+data:
+  split: training
+  top_lidar_only: true
+  max_frames_per_seg: null
+
+train:
+  device: auto
+  seed: 42
+  total_segs: 20
+  epochs_per_seg: 3
+  batch_size: 1
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 35.0
+  save_every: 5
+
+eval:
+  segs: 5
+  score_thresh: 0.2
+  nms_iou: 0.2
+  iou_thresholds:
+    vehicle: 0.7
+    pedestrian: 0.5
+    cyclist: 0.5

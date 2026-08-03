@@ -26,6 +26,8 @@ Prerequisites (Colab):
   from google.colab import drive; drive.mount('/content/drive')
 """
 
+from __future__ import annotations
+
 import argparse
 import gc
 import json
@@ -39,6 +41,9 @@ import yaml
 from torch.utils.data import DataLoader, Dataset
 
 from models import build_detector
+from modules.run_artifacts import RunArtifacts
+from modules.fusion import build_fusion_tensor
+from modules.runtime import resolve_torch_device, set_global_seed
 from modules.waymo_open_dataset import (
     LIDAR_DET_CLASS_MAP,
     YOLO_CLASS_MAP,
@@ -58,9 +63,10 @@ class WaymoGCSDataset(Dataset):
     as bytes in the Parquet column directly into a float32 tensor.
 
     Args:
-        toolkit:  ToolKit instance with an active segment assigned.
-        imgsz:    Square image size to resize to.
-        cameras:  Camera IDs to include.
+        toolkit:     ToolKit instance with an active segment assigned.
+        imgsz:       Square image size to resize to.
+        cameras:     Camera IDs to include.
+        max_frames:  Optional limit on timestamps per segment (for smoke tests).
     """
 
     def __init__(
@@ -68,41 +74,36 @@ class WaymoGCSDataset(Dataset):
         toolkit: ToolKit,
         imgsz: int = 640,
         cameras: tuple = (1, 2, 3, 4, 5),
+        max_frames: int | None = None,
     ):
         self.toolkit = toolkit
         self.imgsz   = imgsz
 
         cam_df       = toolkit._read_cached('camera_image')
         self.box_df  = toolkit._read_cached('camera_box')
-
+        timestamps = sorted(cam_df['key.frame_timestamp_micros'].unique().tolist())
+        if max_frames is not None:
+            timestamps = timestamps[:max_frames]
+        selected_timestamps = set(timestamps)
         self.index = [
             (row['key.frame_timestamp_micros'], row['key.camera_name'])
             for _, row in cam_df.iterrows()
-            if row['key.camera_name'] in cameras
+            if row['key.camera_name'] in cameras and row['key.frame_timestamp_micros'] in selected_timestamps
         ]
-
-        labeled = sum(
-            1 for ts, cam in self.index
-            if len(self.box_df[
-                (self.box_df['key.frame_timestamp_micros'] == ts) &
-                (self.box_df['key.camera_name'] == cam)
-            ]) > 0
-        )
+        labeled_keys = set(zip(
+            self.box_df['key.frame_timestamp_micros'], self.box_df['key.camera_name']
+        ))
+        labeled = sum((ts, cam) in labeled_keys for ts, cam in self.index)
         print(f'   label coverage: {labeled}/{len(self.index)} frames have boxes')
 
     def __len__(self) -> int:
         return len(self.index)
 
-    def __getitem__(self, i: int):
+    def _load_image_and_labels(self, i: int):
+        """Load an unscaled BGR image and normalized 2-D labels."""
         ts, cam = self.index[i]
-
-        img   = self.toolkit.load_camera_frame(ts, cam)   # H×W×3 BGR
-        h0, w0 = img.shape[:2]
-
-        img = cv2.resize(img, (self.imgsz, self.imgsz))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
-
+        image = self.toolkit.load_camera_frame(ts, cam)
+        h0, w0 = image.shape[:2]
         boxes_df = self.box_df[
             (self.box_df['key.frame_timestamp_micros'] == ts) &
             (self.box_df['key.camera_name'] == cam)
@@ -112,24 +113,43 @@ class WaymoGCSDataset(Dataset):
             type_int = int(row[f'{_C_BOX}.type'])
             if type_int not in YOLO_CLASS_MAP:
                 continue
-            cx = float(row[f'{_C_BOX}.box.center.x']) / w0
-            cy = float(row[f'{_C_BOX}.box.center.y']) / h0
-            bw = float(row[f'{_C_BOX}.box.size.x'])   / w0
-            bh = float(row[f'{_C_BOX}.box.size.y'])   / h0
             labels.append([
                 YOLO_CLASS_MAP[type_int],
-                min(max(cx, 0.0), 1.0),
-                min(max(cy, 0.0), 1.0),
-                min(bw, 1.0),
-                min(bh, 1.0),
+                min(max(float(row[f'{_C_BOX}.box.center.x']) / w0, 0.0), 1.0),
+                min(max(float(row[f'{_C_BOX}.box.center.y']) / h0, 0.0), 1.0),
+                min(float(row[f'{_C_BOX}.box.size.x']) / w0, 1.0),
+                min(float(row[f'{_C_BOX}.box.size.y']) / h0, 1.0),
             ])
+        label_tensor = torch.tensor(labels, dtype=torch.float32) if labels else torch.zeros((0, 5), dtype=torch.float32)
+        return image, label_tensor
 
-        labels = (
-            torch.tensor(labels, dtype=torch.float32)
-            if labels
-            else torch.zeros((0, 5), dtype=torch.float32)
-        )
-        return img, labels
+    def __getitem__(self, i: int):
+        image, labels = self._load_image_and_labels(i)
+        image = cv2.resize(image, (self.imgsz, self.imgsz))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+        return image, labels
+
+
+class WaymoCameraLiDARFusionDataset(WaymoGCSDataset):
+    """Camera samples augmented with a calibrated sparse LiDAR depth raster."""
+
+    def __init__(self, toolkit: ToolKit, imgsz: int = 512, cameras: tuple = (1,),
+                 top_lidar_only: bool = True, max_depth: float = 75.0,
+                 max_frames: int | None = None):
+        super().__init__(toolkit, imgsz=imgsz, cameras=cameras, max_frames=max_frames)
+        self.top_lidar_only = top_lidar_only
+        self.max_depth = max_depth
+        self.calibrations = {camera: toolkit.load_camera_calibration(camera) for camera in cameras}
+
+    def __getitem__(self, i: int):
+        image, labels = self._load_image_and_labels(i)
+        timestamp, camera = self.index[i]
+        point_sets = self.toolkit.load_lidar_points_xyzi(timestamp)
+        if self.top_lidar_only and point_sets:
+            point_sets = [max(point_sets, key=len)]
+        points = np.concatenate(point_sets, axis=0).astype(np.float32) if point_sets else np.zeros((0, 4), np.float32)
+        return build_fusion_tensor(image, points, self.calibrations[camera], self.imgsz, self.max_depth), labels
 
 
 # ── LiDAR Dataset ────────────────────────────────────────────────────────────
@@ -272,15 +292,22 @@ class ProgressTracker:
 # ── Training ──────────────────────────────────────────────────────────────────
 
 
-def train(cfg: dict, drive_dir: Path):
-    device    = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def train(cfg: dict, drive_dir: Path, resume: bool = False):
+    train_cfg = cfg['train']
+    device    = resolve_torch_device(train_cfg.get('device', 'auto'))
+    set_global_seed(int(train_cfg.get('seed', 42)))
     ckpt_dir  = drive_dir / 'checkpoints'
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     progress_file = drive_dir / 'progress.json'
+    artifacts = RunArtifacts(drive_dir, cfg)
     latest_ckpt   = ckpt_dir  / 'latest.pt'
 
-    # Pass latest checkpoint path into cfg so detector.build_model can find it
+    # Resume is explicit so a new experiment cannot silently reuse old weights.
     if latest_ckpt.exists():
+        if not resume:
+            raise FileExistsError(
+                f'{latest_ckpt} already exists. Use a new --drive-dir or pass --resume intentionally.'
+            )
         cfg['resume_weights'] = str(latest_ckpt)
         print(f'Resuming from : {latest_ckpt}')
 
@@ -288,7 +315,6 @@ def train(cfg: dict, drive_dir: Path):
     nn_model = detector.build_model(cfg, device)
     nn_model.train()
 
-    train_cfg = cfg['train']
     optimizer = torch.optim.AdamW(
         nn_model.parameters(),
         lr=train_cfg['lr'],
@@ -307,7 +333,9 @@ def train(cfg: dict, drive_dir: Path):
     print(f'Epochs/seg    : {train_cfg["epochs_per_seg"]}')
     print(f'Batch size    : {train_cfg["batch_size"]}')
     print(f'LR            : {train_cfg["lr"]}')
-    print(f'Drive dir     : {drive_dir}')
+    print(f'Run dir       : {drive_dir}')
+    print(f'Seed          : {train_cfg.get("seed", 42)}')
+    artifacts.record('run_started', task=task, device=str(device), seed=int(train_cfg.get('seed', 42)))
 
     # ── Progress ──────────────────────────────────────────────────────────────
     tracker = ProgressTracker(progress_file)
@@ -329,6 +357,7 @@ def train(cfg: dict, drive_dir: Path):
     cameras  = tuple(cfg['data'].get('cameras', [1, 2, 3, 4, 5]))
     img_size = cfg['data'].get('img_size', 640)
 
+    global_epoch = len(tracker.trained) * train_cfg['epochs_per_seg']
     for seg in list(tracker.pending):
         seg_num = len(tracker.trained) + 1
         total   = len(tracker.trained) + len(tracker.pending)
@@ -336,14 +365,24 @@ def train(cfg: dict, drive_dir: Path):
         print(f'   {seg[:72]}')
 
         toolkit.assign_segment(seg)
-        if task == 'lidar_3d_detection':
+        if task == 'camera_lidar_fusion_2d_detection':
+            dataset = WaymoCameraLiDARFusionDataset(
+                toolkit, imgsz=img_size, cameras=cameras,
+                top_lidar_only=cfg['data'].get('top_lidar_only', True),
+                max_depth=cfg['data'].get('fusion_max_depth', 75.0),
+                max_frames=cfg['data'].get('max_frames_per_seg'),
+            )
+        elif task == 'lidar_3d_detection':
             dataset = WaymoLiDARDataset(
                 toolkit,
                 top_lidar_only=cfg['data'].get('top_lidar_only', True),
                 max_frames=cfg['data'].get('max_frames_per_seg'),
             )
         else:
-            dataset = WaymoGCSDataset(toolkit, imgsz=img_size, cameras=cameras)
+            dataset = WaymoGCSDataset(
+                toolkit, imgsz=img_size, cameras=cameras,
+                max_frames=cfg['data'].get('max_frames_per_seg'),
+            )
         loader  = DataLoader(
             dataset,
             batch_size=train_cfg['batch_size'],
@@ -356,6 +395,7 @@ def train(cfg: dict, drive_dir: Path):
 
         # ── Epoch loop ────────────────────────────────────────────────────────
         for epoch in range(1, train_cfg['epochs_per_seg'] + 1):
+            global_epoch += 1
             total_loss = 0.0
             skipped    = 0
 
@@ -378,11 +418,21 @@ def train(cfg: dict, drive_dir: Path):
                 total_loss += loss.item()
 
             trained_batches = len(loader) - skipped
-            avg = total_loss / max(trained_batches, 1)
+            if trained_batches == 0:
+                raise RuntimeError(
+                    "No gradient-bearing batches were produced. Training was stopped before "
+                    "recording a misleading checkpoint; inspect the model/loss configuration."
+                )
+            avg = total_loss / trained_batches
             print(
                 f'   epoch {epoch}/{train_cfg["epochs_per_seg"]}  '
                 f'loss={avg:.4f}  '
                 f'({trained_batches}/{len(loader)} batches had labels)'
+            )
+            artifacts.record(
+                'train_epoch', global_epoch=global_epoch, segment=seg,
+                segment_number=seg_num, epoch=epoch, loss=avg,
+                trained_batches=trained_batches, total_batches=len(loader),
             )
 
         tracker.mark_done(seg)
@@ -395,6 +445,8 @@ def train(cfg: dict, drive_dir: Path):
         gc.collect()
         if device.type == 'cuda':
             torch.cuda.empty_cache()
+        elif device.type == 'mps':
+            torch.mps.empty_cache()
 
         # ── Save checkpoint ───────────────────────────────────────────────────
         if seg_num % train_cfg['save_every'] == 0 or not tracker.pending:
@@ -423,9 +475,9 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         '--drive-dir',
-        default='./runs/waymo',
+        default=None,
         metavar='DIR',
-        help='Directory for checkpoints + progress.json (default: ./runs/waymo).',
+        help='Directory for checkpoints + progress.json. Defaults to runs/<config name>.',
     )
     # ── Optional per-run overrides (take precedence over YAML) ───────────────
     p.add_argument(
@@ -443,10 +495,33 @@ def parse_args() -> argparse.Namespace:
         help='Override train.batch_size from the YAML.',
     )
     p.add_argument(
+        '--max-frames',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Limit timestamps per segment for any backend (useful for fast local tests).',
+    )
+    p.add_argument(
         '--lr',
         type=float,
         default=None,
         help='Override train.lr from the YAML.',
+    )
+    p.add_argument(
+        '--device',
+        choices=['auto', 'cuda', 'mps', 'cpu'],
+        default=None,
+        help='Override train.device (default: auto selects CUDA, then MPS, then CPU).',
+    )
+    p.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume from checkpoints/latest.pt in the selected run directory.',
+    )
+    p.add_argument(
+        '--smoke-test',
+        action='store_true',
+        help='Run one segment, one epoch, the FRONT camera, and ten timestamps by default.',
     )
     return p.parse_args()
 
@@ -457,12 +532,21 @@ if __name__ == '__main__':
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    # Apply CLI overrides — these take precedence over YAML values
+    # Apply CLI overrides — these take precedence over YAML values.
     if args.total_segs is not None:
         cfg['train']['total_segs'] = args.total_segs
     if args.batch is not None:
         cfg['train']['batch_size'] = args.batch
     if args.lr is not None:
         cfg['train']['lr'] = args.lr
+    if args.device is not None:
+        cfg['train']['device'] = args.device
+    if args.smoke_test:
+        cfg['name'] = f"{cfg['name']}-smoke"
+        cfg['train'].update({'total_segs': 1, 'epochs_per_seg': 1, 'batch_size': min(cfg['train']['batch_size'], 2)})
+        cfg['data'].update({'cameras': [1], 'max_frames_per_seg': 10})
+    if args.max_frames is not None:
+        cfg['data']['max_frames_per_seg'] = args.max_frames
 
-    train(cfg, Path(args.drive_dir))
+    run_dir = Path(args.drive_dir) if args.drive_dir else Path('./runs') / cfg['name']
+    train(cfg, run_dir, resume=args.resume)

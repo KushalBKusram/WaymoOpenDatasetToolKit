@@ -1,0 +1,38 @@
+# Calibrated early fusion: RGB + sparse projected LiDAR depth/intensity.
+name: camera_lidar_fusion
+task: camera_lidar_fusion_2d_detection
+
+model:
+  type: CameraLiDARFusionDetector
+  num_classes: 4
+  class_names: [vehicle, pedestrian, cyclist, sign]
+  hidden_dim: 128
+  num_queries: 100
+  num_encoder_layers: 3
+  num_decoder_layers: 3
+  nhead: 8
+  no_object_weight: 0.1
+
+data:
+  split: training
+  cameras: [1]                 # start with FRONT: every sample also decodes a LiDAR frame
+  img_size: 512
+  top_lidar_only: true
+  fusion_max_depth: 75.0
+  max_frames_per_seg: null
+
+train:
+  device: auto
+  seed: 42
+  total_segs: 20
+  epochs_per_seg: 2
+  batch_size: 2
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 10.0
+  save_every: 5
+
+eval:
+  segs: 5
+  conf: 0.25
+  iou: 0.45

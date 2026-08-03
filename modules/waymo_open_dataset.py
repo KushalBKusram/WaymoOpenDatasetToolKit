@@ -891,42 +891,54 @@ class ToolKit:
         lidar_row: pd.Series,
         cal_row: pd.Series,
     ) -> np.ndarray:
-        """Convert one LiDAR range image to vehicle-frame (N, 3) XYZ with NumPy."""
+        """Convert a range image to finite vehicle-frame (N, 3) XYZ points."""
         range_image = ToolKit._decode_range_image(lidar_row)
         ranges = range_image[..., 0]
-        valid = ranges > 0
+        valid = np.isfinite(ranges) & (ranges > 0) & (ranges < 300.0)
+        rows, cols = np.nonzero(valid)
+        if not len(rows):
+            return np.zeros((0, 3), dtype=np.float32)
         height, width, _ = range_image.shape
-        inclination = ToolKit._get_beam_inclinations(cal_row, height)[:, None]
-        azimuth = np.linspace(np.pi, -np.pi, width, dtype=np.float32)[None, :]
+        inclination = ToolKit._get_beam_inclinations(cal_row, height)[rows]
+        azimuth = np.linspace(np.pi, -np.pi, width, dtype=np.float32)[cols]
+        selected_ranges = ranges[rows, cols]
         cos_inc = np.cos(inclination)
         xyz_sensor = np.stack([
-            ranges * cos_inc * np.cos(azimuth),
-            ranges * cos_inc * np.sin(azimuth),
-            ranges * np.sin(inclination),
-        ], axis=-1)
+            selected_ranges * cos_inc * np.cos(azimuth),
+            selected_ranges * cos_inc * np.sin(azimuth),
+            selected_ranges * np.sin(inclination),
+        ], axis=1)
         extrinsic = np.asarray(cal_row[f'{_L_CAL}.extrinsic.transform'], dtype=np.float32).reshape(4, 4)
-        xyz_vehicle = xyz_sensor.reshape(-1, 3) @ extrinsic[:3, :3].T + extrinsic[:3, 3]
-        return xyz_vehicle[valid.reshape(-1)].astype(np.float32, copy=False)
+        with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+            xyz_vehicle = xyz_sensor @ extrinsic[:3, :3].T + extrinsic[:3, 3]
+        return xyz_vehicle[np.isfinite(xyz_vehicle).all(axis=1)].astype(np.float32, copy=False)
+
 
     @staticmethod
     def _range_image_to_points_xyzi(
         lidar_row: pd.Series,
         cal_row: pd.Series,
     ) -> np.ndarray:
-        """Convert one LiDAR range image to vehicle-frame (N, 4) XYZI with NumPy."""
+        """Convert a range image to finite vehicle-frame (N, 4) XYZI points."""
         range_image = ToolKit._decode_range_image(lidar_row)
         ranges = range_image[..., 0]
-        valid = ranges > 0
+        valid = np.isfinite(ranges) & (ranges > 0) & (ranges < 300.0)
+        rows, cols = np.nonzero(valid)
+        if not len(rows):
+            return np.zeros((0, 4), dtype=np.float32)
         height, width, _ = range_image.shape
-        inclination = ToolKit._get_beam_inclinations(cal_row, height)[:, None]
-        azimuth = np.linspace(np.pi, -np.pi, width, dtype=np.float32)[None, :]
+        inclination = ToolKit._get_beam_inclinations(cal_row, height)[rows]
+        azimuth = np.linspace(np.pi, -np.pi, width, dtype=np.float32)[cols]
+        selected_ranges = ranges[rows, cols]
         cos_inc = np.cos(inclination)
         xyz_sensor = np.stack([
-            ranges * cos_inc * np.cos(azimuth),
-            ranges * cos_inc * np.sin(azimuth),
-            ranges * np.sin(inclination),
-        ], axis=-1)
+            selected_ranges * cos_inc * np.cos(azimuth),
+            selected_ranges * cos_inc * np.sin(azimuth),
+            selected_ranges * np.sin(inclination),
+        ], axis=1)
         extrinsic = np.asarray(cal_row[f'{_L_CAL}.extrinsic.transform'], dtype=np.float32).reshape(4, 4)
-        xyz_vehicle = xyz_sensor.reshape(-1, 3) @ extrinsic[:3, :3].T + extrinsic[:3, 3]
-        intensity = range_image[..., 1].reshape(-1, 1)
-        return np.concatenate([xyz_vehicle[valid.reshape(-1)], intensity[valid.reshape(-1)]], axis=1).astype(np.float32, copy=False)
+        with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+            xyz_vehicle = xyz_sensor @ extrinsic[:3, :3].T + extrinsic[:3, 3]
+        intensity = range_image[..., 1][rows, cols, None]
+        output = np.concatenate((xyz_vehicle, intensity), axis=1)
+        return output[np.isfinite(output).all(axis=1)].astype(np.float32, copy=False)

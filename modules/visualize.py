@@ -527,7 +527,9 @@ def project_lidar_to_camera(
     pts_hom = np.hstack([all_pts, np.ones((len(all_pts), 1))])
     pts_cam = (veh_to_cam @ pts_hom.T).T[:, :3]
 
-    front = pts_cam[:, 2] > 0
+    # Waymo uses forward-left-up vehicle axes.  Camera calibration keeps that
+    # convention, so the transformed X axis is optical depth.
+    front = np.isfinite(pts_cam).all(axis=1) & (pts_cam[:, 0] > 0)
     pts_cam = pts_cam[front]
 
     fu = float(cam_calib_row[f'{_CAM_CAL}.intrinsic.f_u'])
@@ -535,9 +537,9 @@ def project_lidar_to_camera(
     cu = float(cam_calib_row[f'{_CAM_CAL}.intrinsic.c_u'])
     cv = float(cam_calib_row[f'{_CAM_CAL}.intrinsic.c_v'])
 
-    u = pts_cam[:, 0] / pts_cam[:, 2] * fu + cu
-    v = pts_cam[:, 1] / pts_cam[:, 2] * fv + cv
-    depth = pts_cam[:, 2]
+    depth = pts_cam[:, 0]
+    u = -pts_cam[:, 1] / depth * fu + cu
+    v = -pts_cam[:, 2] / depth * fv + cv
 
     if image_shape is not None:
         height, width = image_shape[:2]

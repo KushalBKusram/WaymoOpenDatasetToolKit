@@ -78,3 +78,6 @@ def list_detectors() -> list[str]:
 # ---------------------------------------------------------------------------
 from . import yolov8_detector        # noqa: F401, E402
 from . import pointpillars_detector  # noqa: F401, E402
+from . import transformer_detector    # noqa: F401, E402
+from . import fusion_detector         # noqa: F401, E402
+from . import centerpoint_detector    # noqa: F401, E402

@@ -70,13 +70,15 @@ class YOLOv8Detector(BaseDetector):
         path = Path(weights)
         if path.exists():
             ckpt = torch.load(weights, map_location=device, weights_only=False)
-            # Toolkit checkpoint format: {'model': nn.Module, 'optimizer': ..., 'seg': int}
-            if isinstance(ckpt, dict) and isinstance(ckpt.get('model'), nn.Module):
-                nn_model = ckpt['model'].to(device)
-                print(f'Resumed from segment {ckpt.get("seg", "?")}')
+            # Toolkit checkpoints carry an explicit segment number. Ultralytics
+            # checkpoints also contain a ``model`` module, so checking that field
+            # alone would incorrectly retain their half-precision export weights.
+            if isinstance(ckpt, dict) and 'seg' in ckpt and isinstance(ckpt.get('model'), nn.Module):
+                nn_model = ckpt['model'].float().to(device)
+                print(f'Resumed from segment {ckpt["seg"]}')
             else:
-                # Ultralytics format
-                nn_model = YOLO(weights).model.to(device)
+                # Ultralytics format: let YOLO normalize its own checkpoint format.
+                nn_model = YOLO(weights).model.float().to(device)
         else:
             # Fresh pretrained weights (auto-downloaded from Ultralytics)
             nn_model = YOLO(weights).model.to(device)
@@ -85,6 +87,10 @@ class YOLOv8Detector(BaseDetector):
         # When loaded outside the Ultralytics training loop, args may be a
         # plain dict — replace it with the default config namespace.
         nn_model.args = get_cfg(DEFAULT_CFG)
+        # Ultralytics checkpoints are commonly exported with parameters frozen;
+        # its Trainer unfreezes them before optimization, so do the same here.
+        for parameter in nn_model.parameters():
+            parameter.requires_grad_(True)
         return nn_model
 
     def loss(self, model: nn.Module, batch: dict) -> torch.Tensor:
@@ -93,8 +99,10 @@ class YOLOv8Detector(BaseDetector):
 
         loss_fn = v8DetectionLoss(model)
         preds   = model(batch['img'])
-        loss, _ = loss_fn(preds, batch)
-        return loss
+        loss_components, _ = loss_fn(preds, batch)
+        # Current Ultralytics returns [box, cls, dfl] components; its Trainer
+        # backpropagates their sum. Expose one scalar through this adapter.
+        return loss_components.sum()
 
     def predict(
         self,

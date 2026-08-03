@@ -20,14 +20,12 @@ numpy
 matplotlib
 plotly
 
-# Training + evaluation (optional — only needed for train.ipynb)
+# Training + evaluation
 ultralytics
 torchmetrics
+pycocotools  # required by torchmetrics COCO mAP evaluation
 pyyaml
 
-# Notebook
-jupyter
-ipykernel
 
 # Local explorer and evaluation dashboard
 streamlit

@@ -1,39 +1,47 @@
-# Waymo Open Dataset ToolKit
+# Waymo Open Dataset Toolkit
 
-A Python toolkit for exploring, visualising, and training on the
-**Waymo Open Dataset v2** (Parquet format). Data streams directly from GCS
-using `dask` / `pandas` / `pyarrow` — **no local download required** for EDA
-or training. The official `waymo-open-dataset` pip package is **not** needed.
+Developer tooling for Waymo Open Dataset v2 Parquet data. The repository has
+three independently usable surfaces:
 
----
+- `app.py`: local Streamlit data explorer and run-artifact viewer.
+- `train.py`: config-driven training for 2-D camera, camera–LiDAR fusion, and
+  3-D LiDAR detectors.
+- `evaluate.py`: checkpoint evaluation that persists a JSON report next to the
+  training artifacts.
 
-## Why this toolkit?
+The data layer reads Waymo v2 Parquet components from GCS through
+`dask`/`pyarrow`; it does not require the official TensorFlow-based
+`waymo-open-dataset` package. Explorer data is cached deliberately in
+`.waymo_cache`; CLI training streams the component rows it needs.
 
-| Feature | This toolkit | Official devkit | mmdetection3d / OpenPCDet |
-|---|:---:|:---:|:---:|
-| GCS streaming (no download) | ✅ | ❌ | ❌ |
-| All 12 v2 Parquet components | ✅ | ✅ | Partial |
-| Notebook-ready `load_*` API | ✅ | ❌ | ❌ |
-| YOLOv8 camera training on Colab | ✅ | ❌ | ❌ |
-| PointPillars LiDAR training on Colab | ✅ | ❌ | ❌ |
-| Switchable backbone registry | ✅ | ❌ | ❌ |
-| `camera_hkp` keypoint loading | ✅ | ✅ | ❌ |
-| macOS / Apple Silicon support | ✅ | ❌ | Partial |
+## Architecture
 
----
-
-## Quick start
-
-### 1. Authenticate with Google Cloud
-
-```bash
-# Install gcloud CLI (once): https://cloud.google.com/sdk/docs/install
-gcloud auth application-default login
+```text
+Waymo v2 Parquet on GCS
+        │
+        ├── ToolKit (modules/waymo_open_dataset.py)
+        │     ├── camera image / box samples
+        │     ├── decoded LiDAR XYZI / 3-D boxes
+        │     └── camera calibration
+        │
+        ├── Streamlit explorer (app.py)
+        │
+        └── train.py
+              ├── detector registry (models/__init__.py)
+              ├── camera datasets: RGB or RGB + projected LiDAR raster
+              ├── LiDAR dataset: XYZI + 3-D boxes
+              └── RunArtifacts: config.json, metrics.json, evaluation.json
 ```
 
-This writes Application Default Credentials used automatically for all GCS reads.
+A detector is selected by `model.type` in YAML. `train.py` dispatches the
+input dataset from `task`; implementations follow `BaseDetector` for model
+construction, batching, loss, and inference. Adding a detector should require
+a model module, registry import, and configuration file—not a trainer fork.
 
-### 2. Install dependencies
+## Environment and authentication
+
+Python 3.11 is the recommended local runtime. Python 3.9 still runs the
+current project but is end-of-life and produces dependency warnings.
 
 ```bash
 python3.11 -m venv .venv
@@ -41,56 +49,190 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Launch the local explorer (recommended)
+GCS access uses Application Default Credentials (ADC). Install the Google Cloud
+CLI if needed, then authenticate once:
+
+```bash
+gcloud auth application-default login
+```
+
+The Streamlit app checks for ADC before making GCS requests. Training or
+segment listing fails if credentials are unavailable or cannot read the Waymo
+bucket.
+
+## Local explorer
 
 ```bash
 streamlit run app.py
 ```
 
-The app is an explorer and run-report dashboard only: training stays a
-reliable, resumable CLI process. It first validates local Google Application
-Default Credentials without contacting GCS, then lets you browse dataset
-segments ten at a time and choose one focused workflow:
+`app.py` is intentionally exploration/evaluation-only. It does not host a
+long-running training job. The explorer:
 
-- **Camera Frames** — five synchronized, labeled camera views in a mosaic;
-  open an individual view at full resolution when needed.
-- **LiDAR Frames** — an interactive browser-based 3-D point cloud with a
-  ground-reference surface, 3-D label boxes, hover details, frame navigation,
-  and playback. A synchronized camera mosaic can be loaded for the active
-  LiDAR timestamp.
-- **Segment Analysis** — class balance, frame density, distance coverage, and
-  per-class label-size summaries for the selected segment.
+- lists segments in pages of ten and downloads only selected components;
+- renders synchronized five-camera mosaics;
+- renders cached, interactive browser 3-D LiDAR point clouds and label boxes;
+- exposes segment-level label, density, and distance statistics; and
+- reads `RunArtifacts` JSON files for completed run reports.
 
-Selected workflow files are downloaded once into `.waymo_cache/` with per-file
-progress, then reused locally. LiDAR exploration also persists its timestamp
-index and decoded per-frame `.npz` cache. The **Local Cache** panel reports the
-selected segment's storage use and can safely remove only that segment after a
-confirmation step.
+The explorer owns `.waymo_cache/`. Deleting a segment through its cache control
+removes only that local segment cache, never GCS data or training artifacts.
 
-### 4. Open the EDA notebook (optional)
+## Training
+
+### Shipped backends
+
+| `task` | `model.type` | Config | Input / output |
+|---|---|---|---|
+| `camera_2d_detection` | `YOLOv8Detector` | `configs/yolov8n.yaml`, `configs/yolov8s.yaml` | RGB camera image → 2-D boxes |
+| `camera_2d_detection` | `TransformerDetector` | `configs/transformer.yaml` | RGB camera image → 2-D boxes |
+| `camera_lidar_fusion_2d_detection` | `CameraLiDARFusionDetector` | `configs/camera_lidar_fusion.yaml` | RGB + calibrated LiDAR depth/intensity → 2-D boxes |
+| `lidar_3d_detection` | `PointPillarsDetector` | `configs/pointpillars.yaml` | XYZI point cloud → oriented 3-D boxes |
+| `lidar_3d_detection` | `CenterPointDetector` | `configs/centerpoint.yaml` | XYZI point cloud → oriented 3-D boxes |
+
+The YOLO detector can use `n`, `s`, `m`, `l`, or `x` by changing
+`model.backbone`. The Transformer and fusion detectors use a compact
+CNN/Transformer with `hidden_dim`, `num_queries`, encoder/decoder layers, and
+attention heads in their config. PointPillars and CenterPoint use the `voxel`
+section for spatial bounds, pillar size, and point/pillar limits.
+
+### Smoke tests
+
+Run a bounded smoke test before a baseline. `--smoke-test` sets one segment,
+one epoch, front camera where relevant, and ten timestamps. `--max-frames`
+overrides the timestamp count for any backend.
 
 ```bash
-jupyter notebook notebooks/eda.ipynb
+# Validate the camera Transformer pipeline.
+python train.py --config configs/transformer.yaml --smoke-test \
+  --max-frames 1 --device mps --drive-dir ./runs/transformer-smoke
+
+# Validate calibration, LiDAR decoding, and early-fusion training.
+python train.py --config configs/camera_lidar_fusion.yaml --smoke-test \
+  --max-frames 1 --device mps --drive-dir ./runs/fusion-smoke
+
+# Validate full-resolution pillarization and 3-D loss.
+python train.py --config configs/centerpoint.yaml --smoke-test \
+  --max-frames 1 --device mps --drive-dir ./runs/centerpoint-smoke
 ```
 
-Data streams from GCS — you see annotated frames in seconds.
+A successful run produces:
 
-### Evaluation reports
+```text
+runs/<experiment>/
+├── config.json                 # resolved configuration at run start
+├── metrics.json                # append-only run/evaluation events
+├── progress.json               # trained and pending segment names
+├── evaluation.json             # written by evaluate.py
+└── checkpoints/
+    ├── latest.pt               # explicit resume target
+    └── seg_XXXX.pt             # periodic checkpoints
+```
 
-Training writes `config.json` and `metrics.json` into `--drive-dir`; the
-**Runs** page in the Streamlit app reads those artifacts. Evaluate a saved
-checkpoint with:
+A run directory containing `checkpoints/latest.pt` is protected. Use a new
+`--drive-dir` for a new experiment; pass `--resume` only to continue that run.
 
 ```bash
-python evaluate.py --config configs/yolov8n.yaml --run-dir ./runs/waymo
-python evaluate.py --config configs/pointpillars.yaml --run-dir ./runs/waymo
+python train.py --config configs/yolov8n.yaml \
+  --drive-dir ./runs/yolov8n-baseline
+
+python train.py --config configs/yolov8n.yaml \
+  --drive-dir ./runs/yolov8n-baseline --resume
 ```
 
-Camera evaluation reports COCO-style 2-D mAP. The LiDAR report is a clearly
-labelled BEV axis-aligned IoU proxy; use Waymo's official evaluator for
-benchmark-quality rotated 3-D metrics.
+### Configuration and runtime controls
 
----
+All config files share the following operational fields:
+
+```yaml
+name: experiment_name
+task: camera_2d_detection
+
+model:
+  type: TransformerDetector
+
+data:
+  split: training
+  cameras: [1, 2, 3, 4, 5]
+  img_size: 512
+  max_frames_per_seg: null
+
+train:
+  device: auto
+  seed: 42
+  total_segs: 20
+  epochs_per_seg: 2
+  batch_size: 4
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 10.0
+  save_every: 5
+```
+
+Use CLI flags for isolated experiments instead of modifying a tracked config:
+
+```bash
+python train.py --config configs/yolov8n.yaml \
+  --total-segs 5 --max-frames 50 --batch 4 --lr 5e-5 --device mps
+```
+
+Runtime selection is explicit and shared by training and evaluation:
+
+| Value | Selection |
+|---|---|
+| `auto` | CUDA, otherwise Apple Silicon MPS, otherwise CPU |
+| `cuda` | CUDA-enabled PyTorch on an NVIDIA GPU |
+| `mps` | Apple Silicon GPU via Metal Performance Shaders |
+| `cpu` | CPU-only fallback |
+
+Use CUDA for sustained multi-segment experiments. MPS is a valid local backend
+for smoke tests and small pilots; it uses the Apple GPU, not the Neural Engine.
+
+### Detector-specific implementation notes
+
+**Transformer.** `TransformerDetector` is a compact DETR-style baseline with a
+CNN feature encoder, 2-D positional encoding, learned object queries, and a
+Transformer encoder/decoder. Its set matching is deterministic greedy matching,
+not exact Hungarian matching. Treat it as an architecture comparison baseline,
+not a reproduction of production DETR training.
+
+**Camera–LiDAR fusion.** `CameraLiDARFusionDetector` projects vehicle-frame
+XYZI through Waymo camera calibration and constructs a five-channel tensor:
+RGB, nearest-return normalized depth, and intensity. It trains and evaluates
+per camera (FRONT by default). This is calibrated early 2-D fusion, not
+multi-camera fusion or 3-D fused detection.
+
+**LiDAR.** PointPillars and CenterPoint consume the same XYZI and 3-D box
+format. CenterPoint uses a separate multi-scale BEV backbone while retaining
+the shared pillarizer, center targets, decoder, and evaluation interface,
+allowing direct data/config comparisons.
+
+## Evaluation
+
+`evaluate.py` loads `checkpoints/latest.pt`, evaluates validation segments, and
+writes `evaluation.json` and a metrics event into the supplied run directory.
+Camera/fusion metrics use `torchmetrics` COCO mAP and require `pycocotools`
+(already listed in `requirements.txt`).
+
+```bash
+python evaluate.py --config configs/yolov8n.yaml \
+  --run-dir ./runs/yolov8n-baseline --max-frames 100
+
+python evaluate.py --config configs/transformer.yaml \
+  --run-dir ./runs/transformer-baseline --max-frames 100
+
+# The fusion checkpoint must receive LiDAR and calibration for the same camera.
+python evaluate.py --config configs/camera_lidar_fusion.yaml \
+  --run-dir ./runs/fusion-baseline --cameras 1 --max-frames 100
+
+python evaluate.py --config configs/centerpoint.yaml \
+  --run-dir ./runs/centerpoint-baseline --max-frames 100
+```
+
+Camera and fusion reports are COCO-style 2-D mAP. LiDAR reports are explicitly
+**BEV axis-aligned AP proxies**, not official Waymo rotated 3-D mAP. Do not use
+them for benchmark or competition claims; integrating the official Waymo
+evaluator is still required for that use case.
 
 ## Project structure
 
@@ -99,21 +241,25 @@ WaymoOpenDatasetToolKit/
 ├── configs/
 │   ├── yolov8n.yaml            # YOLOv8-nano config (free Colab T4)
 │   ├── yolov8s.yaml            # YOLOv8-small config (Colab Pro)
-│   └── pointpillars.yaml       # PointPillars LiDAR detection (T4-friendly)
+│   ├── transformer.yaml        # Lightweight DETR-style camera detector
+│   ├── camera_lidar_fusion.yaml # Calibrated RGB + LiDAR early fusion
+│   ├── pointpillars.yaml       # PointPillars 3-D detection
+│   └── centerpoint.yaml        # CenterPoint-style pillar 3-D detection
 ├── models/
 │   ├── __init__.py             # Detector registry (register_detector / build_detector)
 │   ├── base_detector.py        # Abstract BaseDetector interface
 │   ├── yolov8_detector.py      # YOLOv8Detector implementation
-│   └── pointpillars_detector.py # PointPillarsDetector implementation
+│   ├── transformer_detector.py  # DETR-style query Transformer implementation
+│   ├── fusion_detector.py       # Calibrated RGB + LiDAR detector
+│   ├── pointpillars_detector.py # PointPillarsDetector implementation
+│   └── centerpoint_detector.py  # CenterPoint-style LiDAR detector
 ├── modules/
 │   ├── run_artifacts.py        # Training/evaluation JSON artifacts for the Runs page
 │   ├── segment_cache.py        # On-demand local segment and decoded-frame cache
+│   ├── fusion.py               # Calibration-aware LiDAR-to-camera rasterization
+│   ├── runtime.py              # Device selection and reproducibility helpers
 │   ├── waymo_open_dataset.py   # ToolKit class — GCS reader + all 12 components
 │   └── visualize.py            # Visualisation utilities (camera, LiDAR, seg, poses)
-├── notebooks/
-│   ├── eda.ipynb               # Interactive EDA — 9 sections
-│   ├── train.ipynb             # Colab training notebook — 2D camera detection
-│   └── train_lidar.ipynb       # Colab training notebook — 3D LiDAR detection
 ├── train.py                    # Config-driven training script
 ├── evaluate.py                 # Checkpoint evaluation → JSON report
 ├── app.py                      # Streamlit local explorer + run dashboard
@@ -131,7 +277,7 @@ Core class. Supports two usage modes:
 
 | Mode | Description |
 |---|---|
-| **Notebook mode** | `load_*` methods return numpy arrays / DataFrames for interactive EDA |
+| **In-memory mode** | `load_*` methods return numpy arrays / DataFrames for scripts and interactive inspection |
 | **Extraction mode** | `extract_*` methods write images, labels, and point clouds to disk |
 
 ### Segment management
@@ -255,168 +401,45 @@ from modules.visualize import (
 
 ---
 
-## EDA Notebook — `notebooks/eda.ipynb`
+## Extending the detector registry
 
-```bash
-jupyter notebook notebooks/eda.ipynb
-```
+The trainer obtains a detector through `models.build_detector(cfg)`. A backend
+must subclass `BaseDetector` and implement these operations:
 
-### Sections
+| Method | Responsibility |
+|---|---|
+| `build_model(cfg, device)` | Construct/load the `nn.Module` and move it to the selected device. |
+| `collate_fn(samples)` | Convert dataset samples to the batch representation used by the model. |
+| `loss(model, batch)` | Return one scalar, gradient-bearing loss tensor. |
+| `predict(model, input, cfg)` | Return detection dictionaries for evaluation. |
 
-| § | Title | What you see |
-|---|---|---|
-| 1 | Dataset Statistics | Object-class pie chart; 3-D boxes-per-frame histogram |
-| 2 | Camera Frames | Single annotated frame; all-5-camera grid |
-| 3 | LiDAR BEV | Bird's-eye-view scatter (height-coloured) + oriented 3-D box footprints |
-| 4 | LiDAR 3-D (Open3D) | Interactive 3-D point cloud + box wireframes |
-| 5 | LiDAR → Camera | Depth-coloured LiDAR overlay on the front camera |
-| 6 | Camera Segmentation | Panoptic mask overlay + instance-ID heatmap *(challenge segs)* |
-| 7 | LiDAR Semantic Seg | Side-by-side height-BEV vs class-BEV + class breakdown *(challenge segs)* |
-| 8 | Human Keypoints | 17-pt COCO skeleton overlay on pedestrians *(challenge segs)* |
-| 9 | Ego-Vehicle Trajectory | Full-segment driven path in world coordinates |
+The camera sample contract is `(image, labels)`, where image is normalized
+`(C, H, W)` and labels are `(N, 5)` in
+`[class_id, center_x, center_y, width, height]` normalized coordinates. The
+fusion backend changes image channels from RGB to RGB + depth + intensity. The
+LiDAR sample contract is `(points, gt_boxes, gt_labels)`, with XYZI points and
+boxes `[center_x, center_y, center_z, dx, dy, dz, heading]`.
 
-### Controls
+To add a backend:
 
-```python
-SPLIT     = 'training'   # 'training' | 'validation' | 'testing'
-FRAME_IDX = 0            # index into the segment's timestamp list
-CAMERA_ID = 1            # 1=FRONT  2=FRONT_LEFT  3=FRONT_RIGHT  4=SIDE_LEFT  5=SIDE_RIGHT
-```
+1. Add `models/<name>_detector.py`, subclass `BaseDetector`, and decorate the
+   class with `@register_detector('Name')`.
+2. Import the module from `models/__init__.py` so the decorator executes.
+3. Add `configs/<name>.yaml` with the matching `model.type` and an existing or
+   newly supported `task`.
+4. Run a one-frame smoke test with a fresh `--drive-dir` before scaling it.
 
----
-
-## Training — `notebooks/train.ipynb` + `train.py`
-
-Trains **YOLOv8** for 2-D camera object detection on Waymo data streamed
-directly from GCS. No local dataset export required.
-
-### Running on Colab (free T4)
-
-1. Open `notebooks/train.ipynb` in Google Colab
-2. Set runtime to **T4 GPU** → *Runtime → Change runtime type*
-3. Run all cells — the notebook handles GCS auth, repo clone, and dependency install
-
-### Key configuration (notebook cell 2)
-
-```python
-CONFIG    = 'configs/yolov8n.yaml'          # nano — free T4
-# CONFIG  = 'configs/yolov8s.yaml'          # small — Colab Pro
-DRIVE_DIR = '/content/drive/MyDrive/waymo'  # checkpoint destination
-
-# Optional one-off overrides (None = use the YAML value)
-TOTAL_SEGS_OVERRIDE = None   # e.g. 5 for a quick smoke test
-BATCH_OVERRIDE      = None   # e.g. 4 if you hit OOM
-```
-
-All other hyperparameters (lr, batch, epochs, img_size, eval thresholds) live
-in the YAML. Edit the config file to make changes that persist across runs.
-
-### Adding a new backbone
-
-1. Create `models/<name>_detector.py` — subclass `BaseDetector`, decorate with `@register_detector('YourType')`
-2. Add `from . import <name>_detector` to `models/__init__.py`
-3. Create `configs/<name>.yaml` with `model.type: YourType`
-4. Run: `python train.py --config configs/<name>.yaml`
-
-No changes to `train.py` required.
-
-### Resume after disconnect
-
-Training auto-resumes from `DRIVE_DIR/checkpoints/latest.pt` — just re-run
-the training cell. A `progress.json` file tracks which segments are done.
-
-### Classes
-
-| YOLO ID | Waymo type | Description |
-|---|---|---|
-| 0 | `TYPE_VEHICLE` | Cars, trucks, buses |
-| 1 | `TYPE_PEDESTRIAN` | Pedestrians |
-| 2 | `TYPE_CYCLIST` | Cyclists |
-| 3 | `TYPE_SIGN` | Traffic signs |
-
-### Evaluation (notebook section 6)
-
-`torchmetrics.detection.MeanAveragePrecision` computes **mAP@0.5** per class
-over configurable validation segments streamed live from GCS.
-
----
-
----
-
-## LiDAR 3D Detection — `notebooks/train_lidar.ipynb` + `configs/pointpillars.yaml`
-
-Trains **PointPillars** for 3-D LiDAR object detection on Waymo data streamed
-directly from GCS. No local dataset export required.
-
-### Architecture
-
-| Stage | Module | Output shape |
-|---|---|---|
-| Voxelization | `_voxelize()` | `(P, 20, 9)` pillars |
-| Pillar feature net | `PillarFeatureNet` (PointNet MLP + max-pool) | `(P, 64)` |
-| Pillar scatter | `PillarScatter` (sparse → dense) | `(B, 64, 400, 400)` |
-| BEV backbone | 2-stage 2-D CNN (64→128, stride 2) | `(B, 128, 200, 200)` |
-| Detection head | heatmap + offset + Z + log-dim + heading | `(B, C+8, 200, 200)` |
-
-**Detection range:** ±50 m XY, −3…3 m Z  
-**Pillar size:** 0.25 m × 0.25 m → 400×400 BEV grid  
-**Loss:** Gaussian focal loss (heatmap) + L1 (box regression)  
-**Inference:** heatmap peak detection — no NMS required
-
-### Running on Colab (free T4)
-
-1. Open `notebooks/train_lidar.ipynb` in Google Colab
-2. Set runtime to **T4 GPU** → *Runtime → Change runtime type*
-3. Run all cells — notebook handles GCS auth, repo clone, and dependency install
-
-### Key configuration (`configs/pointpillars.yaml`)
-
-```yaml
-voxel:
-  x_range: [-50.0, 50.0]
-  y_range: [-50.0, 50.0]
-  z_range: [-3.0, 3.0]
-  voxel_size: [0.25, 0.25]   # → 400×400 BEV
-  max_pillars: 6000
-  max_points_per_pillar: 20
-
-train:
-  batch_size: 2              # 2 × 6000 pillars fits ~5 GB VRAM
-  lr: 1.0e-3
-```
-
-### Adding a new LiDAR backbone
-
-1. Create `models/<name>_detector.py` — subclass `BaseDetector`, decorate with `@register_detector('YourType')`
-2. Add `from . import <name>_detector` to `models/__init__.py`
-3. Create `configs/<name>.yaml` with `task: lidar_3d_detection` and `model.type: YourType`
-4. Run: `python train.py --config configs/<name>.yaml`
-
-### LiDAR Classes
-
-| Class ID | Waymo type | Description |
-|---|---|---|
-| 0 | `TYPE_VEHICLE` | Cars, trucks, buses |
-| 1 | `TYPE_PEDESTRIAN` | Pedestrians |
-| 2 | `TYPE_CYCLIST` | Cyclists |
-
-### Evaluation (notebook section 7)
-
-BEV mAP computed with axis-aligned IoU (fast proxy).
-IoU thresholds follow Waymo convention: vehicle=0.7, pedestrian=0.5, cyclist=0.5.
-
-> For competition-accurate evaluation use the official Waymo eval library
-> (requires rotated BEV IoU). The notebook prints a note explaining the
-> approximation.
-
----
+A new task type additionally needs a dataset-selection branch in `train.py`
+and, if its inference input differs from RGB or XYZI, an evaluation branch in
+`evaluate.py`. `CameraLiDARFusionDetector` is the reference for a calibrated
+non-RGB camera task.
 
 ## Waymo challenge coverage
 
 | Challenge | Components used | Status |
 |---|---|---|
-| 2D Object Detection | `camera_image`, `camera_box` | ✅ Load + train (YOLOv8) |
-| 3D Object Detection | `lidar`, `lidar_box`, `lidar_calibration` | ✅ Load + train (PointPillars) |
+| 2D Object Detection | `camera_image`, `camera_box` | ✅ Load + train (YOLOv8, Transformer) |
+| 3D Object Detection | `lidar`, `lidar_box`, `lidar_calibration` | ✅ Load + train (PointPillars, CenterPoint) |
 | 3D Object Tracking | `lidar_box` + `key.laser_object_id` | ✅ Data accessible |
 | 2D Panoptic Video Seg | `camera_segmentation` | ✅ Load + visualise |
 | 3D Semantic Segmentation | `lidar_segmentation` | ✅ Load + visualise |

@@ -20,8 +20,11 @@ data:
   split: training
   cameras: [1, 2, 3, 4, 5]    # all 5 Waymo cameras
   img_size: 640
+  max_frames_per_seg: null     # set a small value for bounded local experiments
 
 train:
+  device: auto                 # CUDA, Apple Silicon MPS, then CPU fallback
+  seed: 42
   total_segs: 20               # null = all ~798 training segments
   epochs_per_seg: 2            # epochs per segment; 2 is a good starting point
   batch_size: 8                # reduce to 4 if you hit OOM
