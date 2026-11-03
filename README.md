@@ -1,18 +1,64 @@
 # Waymo Open Dataset Toolkit
 
-Developer tooling for Waymo Open Dataset v2 Parquet data. The repository has
-three independently usable surfaces:
+A reproducible perception experimentation toolkit for Waymo Open Dataset v2
+(Parquet): camera, LiDAR and camera–LiDAR fusion detection baselines under one
+benchmark protocol, an official-metric LiDAR evaluation path, error analysis, and
+a camera tracking-by-detection baseline with failure replay. It is not an
+autonomy stack: prediction, planning, multi-camera or multi-frame fusion and
+production deployment are out of scope.
+
+The repository has these usable surfaces:
 
 - `app.py`: local Streamlit data explorer and run-artifact viewer.
 - `train.py`: config-driven training for 2-D camera, camera–LiDAR fusion, and
   3-D LiDAR detectors.
 - `evaluate.py`: checkpoint evaluation that persists a JSON report next to the
-  training artifacts.
+  training artifacts, and can dump LiDAR detections for the official evaluator.
+- `scripts/`: error analysis, official LiDAR evaluation, tracking evaluation,
+  tracker tuning and failure replay.
 
 The data layer reads Waymo v2 Parquet components from GCS through
 `dask`/`pyarrow`; it does not require the official TensorFlow-based
-`waymo-open-dataset` package. Explorer data is cached deliberately in
-`.waymo_cache`; CLI training streams the component rows it needs.
+`waymo-open-dataset` package (only the optional official LiDAR evaluator does).
+Explorer data is cached deliberately in `.waymo_cache`; CLI training streams the
+component rows it needs.
+
+## Results at a glance
+
+Everything below is seed 42, a single run, on one RTX 4080 SUPER, using the 10
+frozen validation segments (FRONT camera, 1,967 frames). These are deliberately
+low-budget baselines (20 of 798 training segments for protocol v1.2, 100 for v1.3),
+so read them as a comparison harness, not as state of the art. The full protocol,
+including how each number is computed and its limitations, is in
+[docs/benchmark_protocol.md](docs/benchmark_protocol.md).
+
+| Model | Score | Vehicle / Pedestrian / Cyclist | Latency per frame (approx.) |
+|---|---|---|---|
+| YOLOv8n, 512 x 512 | mAP 0.084 | 0.185 / 0.062 / 0.005 | 10 ms |
+| RT-DETR-L, 512 x 512 | mAP 0.120 | 0.234 / 0.119 / 0.008 | 32 ms |
+| YOLOv8n + LiDAR channels | mAP 0.081 | 0.172 / 0.071 / 0.000 | 44 ms |
+| **YOLOv8n, 640 x 960, 100 segments (v1.3)** | **mAP 0.157** | 0.243 / 0.109 / 0.118 | 11 ms |
+| PointPillars | official L1 AP 0.048 / 0.014 / 0 | | 400 ms |
+| CenterPoint | official L1 AP 0.048 / 0.013 / 0 | | 400 ms |
+
+- **Camera:** keeping the aspect ratio at 640 x 960 and training on more segments roughly
+  doubled mAP (0.084 to 0.157) at no latency cost and made cyclists detectable.
+  RT-DETR-L is more accurate than YOLOv8n at the same budget but about 3x slower
+  (and roughly ten times larger), so it did not replace the baseline.
+- **Fusion:** adding projected LiDAR depth and intensity to YOLOv8n gave no gain.
+- **LiDAR:** under the official Waymo 3-D metric PointPillars and CenterPoint tie;
+  the BEV proxy score that ranked CenterPoint ahead is not supported. LiDAR scores
+  are a different metric from camera mAP and cannot be ranked against it.
+- **Tracking:** a SORT-style tracker on YOLOv8n 640 x 960 detections reaches
+  IDF1 0.327 and MOTA 0.054 (details below). 90 to 97% of missed objects are
+  detector misses, so detection, not association, is the main limit.
+
+Known gaps: single seed everywhere (differences under about 0.01 mAP are noise),
+the 640 x 960 setting was only trained for YOLOv8n, the LiDAR official AP is very
+low and its cause is not diagnosed, and there is no HOTA.
+
+Write-ups: [decision record](docs/decision_record_stage3.md) (what advances and why)
+and [tracking baseline](docs/tracking_baseline.md) (method, metrics, failure replay).
 
 ## Architecture
 
@@ -85,8 +131,11 @@ removes only that local segment cache, never GCS data or training artifacts.
 | `task` | `model.type` | Config | Input / output |
 |---|---|---|---|
 | `camera_2d_detection` | `YOLOv8Detector` | `configs/yolov8n.yaml`, `configs/yolov8s.yaml` | RGB camera image → 2-D boxes |
-| `camera_2d_detection` | `TransformerDetector` | `configs/transformer.yaml` | RGB camera image → 2-D boxes |
-| `camera_lidar_fusion_2d_detection` | `CameraLiDARFusionDetector` | `configs/camera_lidar_fusion.yaml` | RGB + calibrated LiDAR depth/intensity → 2-D boxes |
+| `camera_2d_detection` | `YOLOv8Detector` (640 x 960) | `configs/yolov8n_hires.yaml`, `configs/yolov8n_hires_100.yaml` | Aspect-preserving RGB input (`data.img_size: [height, width]`) |
+| `camera_2d_detection` | `RTDETRDetector` | `configs/rtdetr.yaml` | RT-DETR-L (COCO-pretrained) → 2-D boxes |
+| `camera_2d_detection` | `TransformerDetector` | `configs/transformer.yaml` | Small DETR-style model, kept for reference; did not learn at benchmark budget |
+| `camera_lidar_fusion_2d_detection` | `YOLOFusionDetector` | `configs/yolo_fusion.yaml` | YOLOv8n with RGB + projected LiDAR depth/intensity → 2-D boxes |
+| `camera_lidar_fusion_2d_detection` | `CameraLiDARFusionDetector` | `configs/camera_lidar_fusion.yaml` | Small DETR-style fusion model, kept for reference |
 | `lidar_3d_detection` | `PointPillarsDetector` | `configs/pointpillars.yaml` | XYZI point cloud → oriented 3-D boxes |
 | `lidar_3d_detection` | `CenterPointDetector` | `configs/centerpoint.yaml` | XYZI point cloud → oriented 3-D boxes |
 
@@ -245,26 +294,83 @@ metrics, operating-point error counts, latency, and review images. Compare
 only runs with the same task, validation scope, camera selection, confidence
 threshold, and evaluation protocol.
 
-Camera and fusion reports are COCO-style 2-D mAP. LiDAR reports are explicitly
-**BEV axis-aligned AP proxies**, not official Waymo rotated 3-D mAP. Do not use
-them for benchmark or competition claims; integrating the official Waymo
-evaluator is still required for that use case.
+Camera and fusion reports are COCO-style 2-D mAP. The LiDAR score in
+`evaluation.json` is a **BEV axis-aligned AP proxy**, not official Waymo rotated
+3-D mAP, and it ranked the two LiDAR models differently from the official metric.
+For benchmark claims, dump the detections and score them with the official
+evaluator:
+
+```bash
+python evaluate.py --config configs/centerpoint.yaml --run-dir ./runs/centerpoint-v1.2-s42 \
+  --dump-detections ./runs/centerpoint-v1.2-s42/detections.npz
+
+# On Linux x86-64 with the official wheel (Python 3.10, TensorFlow 2.13):
+pip install waymo-open-dataset-tf-2-12-0==1.6.7
+python scripts/waymo_official_eval.py ./runs/centerpoint-v1.2-s42/detections.npz
+```
+
+The official script reads the dump only, so it runs on a different machine from
+training. Details, including how difficulty levels are derived, are in the
+[protocol](docs/benchmark_protocol.md#5-metrics).
+
+### Error analysis
+
+```bash
+python scripts/error_analysis.py --config configs/yolov8n.yaml --run-dir ./runs/yolov8n-v1.2-s42
+```
+
+Slices camera detections by object size and false-positive type (localization,
+background, duplicate, class confusion) and writes `error_analysis.json` into the
+run directory.
+
+## Tracking baseline
+
+A camera tracking-by-detection baseline lives in `modules/tracking.py` (SORT-style:
+constant-velocity Kalman filter, Hungarian matching on IoU, class-aware) and is
+scored with `motmetrics` against Waymo's persistent `camera_object_id` identities.
+
+```bash
+# Score the tracker (detections are cached in the run directory).
+python scripts/track_eval.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42
+# Tune association settings on held-out validation segments, never the eval set.
+python scripts/tune_tracker.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42
+# Attribute missed objects to detector, score gate or association; render image strips.
+python scripts/track_replay.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42
+```
+
+| Detector | MOTA | IDF1 |
+|---|---|---|
+| YOLOv8n 512, default tracker | 0.105 | 0.286 |
+| YOLOv8n 512, tuned tracker | 0.166 | 0.307 |
+| YOLOv8n 640 x 960 (100 segments), tuned tracker | 0.054 | 0.327 |
+| Box oracle (ground-truth boxes as detections) | 0.819 | 0.679 |
+
+The better detector raises IDF1 but adds false positives, so MOTA falls. The box
+oracle shows the ceiling of an IoU-only tracker on this data. See
+[docs/tracking_baseline.md](docs/tracking_baseline.md) for the method, sanity checks
+and failure analysis.
 
 ## Project structure
 
 ```text
 WaymoOpenDatasetToolKit/
 ├── configs/
-│   ├── yolov8n.yaml            # YOLOv8-nano config (free Colab T4)
-│   ├── yolov8s.yaml            # YOLOv8-small config (Colab Pro)
-│   ├── transformer.yaml        # Lightweight DETR-style camera detector
-│   ├── camera_lidar_fusion.yaml # Calibrated RGB + LiDAR early fusion
+│   ├── benchmark_splits.json   # Frozen train/eval segment lists (v1) and the 100-segment list
+│   ├── yolov8n.yaml            # YOLOv8-nano baseline (512 x 512)
+│   ├── yolov8n_hires*.yaml     # 640 x 960 aspect-preserving variants (protocol v1.3)
+│   ├── yolov8s.yaml            # YOLOv8-small config
+│   ├── rtdetr.yaml             # RT-DETR-L
+│   ├── yolo_fusion.yaml        # YOLOv8n with RGB + projected LiDAR channels
+│   ├── transformer.yaml        # Small DETR-style camera detector (reference)
+│   ├── camera_lidar_fusion.yaml # Small DETR-style fusion model (reference)
 │   ├── pointpillars.yaml       # PointPillars 3-D detection
 │   └── centerpoint.yaml        # CenterPoint-style pillar 3-D detection
 ├── models/
 │   ├── __init__.py             # Detector registry (register_detector / build_detector)
 │   ├── base_detector.py        # Abstract BaseDetector interface
 │   ├── yolov8_detector.py      # YOLOv8Detector implementation
+│   ├── rtdetr_detector.py       # RT-DETR-L implementation
+│   ├── yolo_fusion_detector.py  # YOLOv8n with LiDAR channels
 │   ├── transformer_detector.py  # DETR-style query Transformer implementation
 │   ├── fusion_detector.py       # Calibrated RGB + LiDAR detector
 │   ├── pointpillars_detector.py # PointPillarsDetector implementation
@@ -274,6 +380,8 @@ WaymoOpenDatasetToolKit/
 │   ├── segment_cache.py        # On-demand local segment and decoded-frame cache
 │   ├── fusion.py               # Calibration-aware LiDAR-to-camera rasterization
 │   ├── runtime.py              # Device selection and reproducibility helpers
+│   ├── benchmark.py            # Frozen split manifests
+│   ├── tracking.py             # SORT-style Kalman + Hungarian tracker
 │   ├── waymo_open_dataset.py   # ToolKit class — GCS reader + all 12 components
 │   └── visualize.py            # Visualisation utilities (camera, LiDAR, seg, poses)
 ├── train.py                    # Config-driven training script
@@ -281,7 +389,16 @@ WaymoOpenDatasetToolKit/
 ├── app.py                      # Streamlit local explorer + run dashboard
 ├── main.py                     # CLI entry point (argparse)
 ├── scripts/
-│   └── download_data.sh        # Optional bulk GCS download helper
+│   ├── download_data.sh        # Optional bulk GCS download helper
+│   ├── error_analysis.py       # Camera errors by object size and failure type
+│   ├── waymo_official_eval.py  # Official Waymo 3-D metric on dumped LiDAR detections
+│   ├── track_eval.py           # Tracking baseline, oracle checks, MOT metrics
+│   ├── tune_tracker.py         # Tracker tuning on held-out dev segments
+│   └── track_replay.py         # Tracking failure attribution and image strips
+├── docs/
+│   ├── benchmark_protocol.md   # Splits, budgets, metrics, advancement rule, results
+│   ├── decision_record_stage3.md
+│   └── tracking_baseline.md
 └── requirements.txt
 ```
 
@@ -454,8 +571,9 @@ non-RGB camera task.
 
 | Challenge | Components used | Status |
 |---|---|---|
-| 2D Object Detection | `camera_image`, `camera_box` | ✅ Load + train (YOLOv8, Transformer) |
-| 3D Object Detection | `lidar`, `lidar_box`, `lidar_calibration` | ✅ Load + train (PointPillars, CenterPoint) |
+| 2D Object Detection | `camera_image`, `camera_box` | ✅ Load + train + benchmark (YOLOv8, RT-DETR, fusion) |
+| 3D Object Detection | `lidar`, `lidar_box`, `lidar_calibration` | ✅ Load + train + official evaluator (PointPillars, CenterPoint) |
+| 2D Object Tracking (camera) | `camera_box` + `key.camera_object_id` | ✅ Tracking-by-detection baseline + MOT metrics |
 | 3D Object Tracking | `lidar_box` + `key.laser_object_id` | ✅ Data accessible |
 | 2D Panoptic Video Seg | `camera_segmentation` | ✅ Load + visualise |
 | 3D Semantic Segmentation | `lidar_segmentation` | ✅ Load + visualise |
