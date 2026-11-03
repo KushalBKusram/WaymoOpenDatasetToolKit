@@ -22,6 +22,14 @@ def resolve_torch_device(requested: str = "auto") -> torch.device:
     return torch.device(choice)
 
 
+def resolve_image_hw(size) -> tuple[int, int]:
+    """Network input (height, width) from data.img_size: an int means square, a pair is [height, width]."""
+    if isinstance(size, (list, tuple)):
+        height, width = size
+        return int(height), int(width)
+    return int(size), int(size)
+
+
 def set_global_seed(seed: int) -> None:
     """Seed Python, NumPy, and PyTorch for comparable experiment runs."""
     random.seed(seed)

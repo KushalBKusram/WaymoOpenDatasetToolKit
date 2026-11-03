@@ -50,7 +50,7 @@ from models import build_detector
 from modules.benchmark import load_split_manifest, stride_timestamps
 from modules.run_artifacts import RunArtifacts
 from modules.fusion import build_fusion_tensor
-from modules.runtime import resolve_torch_device, set_global_seed
+from modules.runtime import resolve_image_hw, resolve_torch_device, set_global_seed
 from modules.waymo_open_dataset import (
     LIDAR_DET_CLASS_MAP,
     YOLO_CLASS_MAP,
@@ -71,7 +71,7 @@ class WaymoGCSDataset(Dataset):
 
     Args:
         toolkit:     ToolKit instance with an active segment assigned.
-        imgsz:       Square image size to resize to.
+        imgsz:       Image size to resize to: an int (square) or [height, width].
         cameras:     Camera IDs to include.
         max_frames:  Optional limit on timestamps per segment (for smoke tests).
         frame_stride: Keep every Nth timestamp (applied before max_frames).
@@ -80,13 +80,14 @@ class WaymoGCSDataset(Dataset):
     def __init__(
         self,
         toolkit: ToolKit,
-        imgsz: int = 640,
+        imgsz: int | list = 640,
         cameras: tuple = (1, 2, 3, 4, 5),
         max_frames: int | None = None,
         frame_stride: int = 1,
     ):
         self.toolkit = toolkit
         self.imgsz   = imgsz
+        self.hw      = resolve_image_hw(imgsz)
 
         cam_df       = toolkit._read_cached('camera_image')
         self.box_df  = toolkit._read_cached('camera_box')
@@ -136,7 +137,7 @@ class WaymoGCSDataset(Dataset):
 
     def __getitem__(self, i: int):
         image, labels = self._load_image_and_labels(i)
-        image = cv2.resize(image, (self.imgsz, self.imgsz))
+        image = cv2.resize(image, (self.hw[1], self.hw[0]))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
         return image, labels

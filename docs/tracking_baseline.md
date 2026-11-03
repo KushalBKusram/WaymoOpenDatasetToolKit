@@ -37,6 +37,22 @@ about 590 frames, rule fixed in advance: best weighted IDF1, ties by MOTA) and t
 10 reported segments. On the dev segments the gain was IDF1 0.243 to 0.262 and MOTA 0.091 to 0.138, and the
 top five settings were within 0.001 IDF1 of each other, so the optimum is flat.
 
+### With the higher-resolution detector (YOLOv8n 640x960, 100 segments, run B)
+
+Tracker settings were tuned again on the same 3 dev segments (score gate 0.25, IoU 0.2, max_age 20,
+min_hits 3, chosen by the same IDF1 rule) and scored once on the 10 eval segments.
+
+| Detector + tracker | MOTA | IDF1 | Vehicle recall / precision | Vehicle ID switches | Pedestrian / cyclist IDF1 |
+|---|---|---|---|---|---|
+| YOLOv8n 512, tuned | 0.166 | 0.307 | 0.28 / 0.79 | 328 | 0.17 / 0.00 |
+| YOLOv8n 640x960 (B), default tracker | 0.054 | 0.322 | 0.42 / 0.55 | 761 | 0.22 / 0.20 |
+| **YOLOv8n 640x960 (B), tuned** | 0.054 | **0.327** | 0.41 / 0.55 | 650 | 0.25 / 0.19 |
+
+The better detector raises IDF1 (0.307 to 0.327) and lets the tracker follow pedestrians and cyclists,
+but it adds false positives at the 0.25 gate, so MOTA falls (0.166 to 0.054). The selection rule was
+fixed as IDF1 before tuning, so I kept it; the dev optimum was flat and a higher score gate would
+likely recover MOTA, but picking it after seeing the eval numbers would be tuning on the reported set.
+
 ## What this shows
 
 1. **Detection is the main limit.** Even the tuned tracker loses most objects: vehicle recall is 0.28,

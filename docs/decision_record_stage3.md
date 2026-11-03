@@ -45,6 +45,26 @@ segments. Success criterion: small-object recall above 10% and mAP up by at leas
 0.02, with p95 latency still within 2x of the current YOLOv8n. If resolution
 does not help, the limit is training data, and the next step is more segments.
 
+## Result of the next experiment (2026-11-03)
+
+Two runs of YOLOv8n at 640x960 (aspect ratio kept), same code and schedule apart from the data:
+
+| Run | mAP | AP50 | Small / medium / large recall | Cyclist AP | p95 latency |
+|---|---|---|---|---|---|
+| Baseline, 512x512 squashed, 20 segments | 0.084 | 0.149 | 4.1% / 36% / 72% | 0.005 | 10.4 ms |
+| A: 640x960, same 20 segments, 10 passes | 0.119 | 0.189 | 6.8% / 45% / 76% | 0.010 | 10.7 ms |
+| B: 640x960, 100 segments, 3 passes | 0.157 | 0.256 | 11.5% / 51% / 79% | 0.118 | 11.1 ms |
+
+- **Resolution alone** (A) adds +0.035 mAP at no latency cost.
+- **More data** (B) adds a further +0.038 and makes cyclists detectable (medium recall 0% to 54%).
+- B meets all three success criteria: small-object recall above 10%, mAP up by at least 0.02, latency
+  within 2x. Under the protocol's advancement rule it replaces the 512x512 baseline for later stages.
+- Costs: B produces more false positives (11.9k vs 6.3k, mostly background and loose boxes), and
+  pedestrian AP dipped slightly (0.119 to 0.109), within what a second seed could change.
+- Still true: single seed, the same 10 validation segments, FRONT camera only. B trained on 100 of
+  798 segments for 3 passes, so it is a different budget from protocol v1.2 and needs its own protocol
+  version before it is compared with other models.
+
 ## Caveats
 
 Single seed; 20 of 798 training and 10 of 202 validation segments; the

@@ -1,0 +1,43 @@
+# configs/yolov8n.yaml
+# YOLOv8-nano on Waymo camera data.
+# Tuned for Colab free T4 (~15 GB VRAM available, ~4 GB used).
+#
+# Usage:
+#   python train.py --config configs/yolov8n.yaml
+#   python train.py --config configs/yolov8n.yaml --drive-dir /content/drive/MyDrive/waymo
+#   python train.py --config configs/yolov8n.yaml --total-segs 5   # quick test run
+
+name: yolov8n_hires_100
+task: camera_2d_detection
+
+model:
+  type: YOLOv8Detector
+  backbone: n          # n=nano | s=small | m=medium | l=large | x=xlarge
+  num_classes: 4
+  class_names: [vehicle, pedestrian, cyclist, sign]
+
+data:
+  split: training
+  cameras: [1]                 # FRONT only per docs/benchmark_protocol.md; use [1, 2, 3, 4, 5] for a labelled 5-camera run
+  img_size: [640, 960]         # [height, width], keeps the 3:2 camera aspect ratio (baseline: 512 squashed)
+  max_frames_per_seg: null     # set a small value for bounded local experiments
+  manifest: configs/benchmark_splits_100.json   # frozen train/eval segments
+  frame_stride: 1              # train on every frame (benchmark protocol v1.1)
+  num_workers: 4               # parallel batch building; speed only, results are unchanged
+
+train:
+  device: auto                 # CUDA, Apple Silicon MPS, then CPU fallback
+  seed: 42
+  total_segs: 100              # null = all ~798 training segments
+  passes: 3                    # passes over all training segments (shuffled each pass)
+  epochs_per_seg: 1            # epochs each time a segment is visited
+  batch_size: 8                # reduce to 4 if you hit OOM
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 10.0
+  save_every: 5                # save a numbered checkpoint every N segments
+
+eval:
+  segs: 10                     # validation segments for mAP computation (configs/benchmark_splits_100.json)
+  conf: 0.25                   # minimum detection confidence
+  iou: 0.45                    # NMS IoU threshold

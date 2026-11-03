@@ -32,6 +32,7 @@ import torch.nn as nn
 
 from models import register_detector
 from models.base_detector import BaseDetector
+from modules.runtime import resolve_image_hw
 
 
 def load_with_new_head(model_cls, yaml_name: str, pretrained: nn.Module, cfg: dict,
@@ -157,7 +158,7 @@ class YOLOv8Detector(BaseDetector):
         eval_cfg = cfg.get('eval', {})
         conf     = eval_cfg.get('conf', 0.25)
         iou      = eval_cfg.get('iou',  0.45)
-        img_size = cfg['data'].get('img_size', 640)
+        net_h, net_w = resolve_image_hw(cfg['data'].get('img_size', 640))
 
         # Wrap the raw nn.Module in an Ultralytics shell once; rebuilding it per
         # frame reloads weights from disk and dominates measured latency.
@@ -169,14 +170,14 @@ class YOLOv8Detector(BaseDetector):
             yolo.model = model.eval()
             shells[id(model)] = yolo
 
-        # Training squashes every image to a square (labels are normalised), so
-        # do the same here instead of letting predict() letterbox. Boxes come
-        # back in square-image pixels and are scaled to the original frame.
+        # Training resizes every image straight to the network size (labels are
+        # normalised), so do the same here instead of letting predict() letterbox.
+        # Boxes come back in network-input pixels and are scaled to the original frame.
         height, width = img_bgr.shape[:2]
-        squashed = cv2.resize(img_bgr, (img_size, img_size))
-        results    = yolo.predict(squashed, conf=conf, iou=iou,
-                                  imgsz=img_size, verbose=False)
-        scale = (width / img_size, height / img_size, width / img_size, height / img_size)
+        resized = cv2.resize(img_bgr, (net_w, net_h))
+        results    = yolo.predict(resized, conf=conf, iou=iou,
+                                  imgsz=[net_h, net_w], verbose=False)
+        scale = (width / net_w, height / net_h, width / net_w, height / net_h)
         detections: list[dict] = []
         r = results[0]
         if r.boxes is not None and len(r.boxes):
