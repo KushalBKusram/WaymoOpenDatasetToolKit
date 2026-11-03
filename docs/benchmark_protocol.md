@@ -113,6 +113,8 @@ negative finding.
 
 ## 8. Reference results (seed 42, single run)
 
+To re-evaluate a reference run and check the numbers, see [reproducibility.md](reproducibility.md).
+
 | Model | Score | AP50 | Vehicle / Pedestrian / Cyclist | Latency |
 |---|---|---|---|---|
 | YOLOv8n | mAP 0.084 | 0.149 | 0.185 / 0.062 / 0.005 | 9.7 ms |
