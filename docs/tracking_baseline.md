@@ -84,6 +84,28 @@ This agrees with the box-oracle check: the tracker is limited by detection first
 two cheap levers left are a shorter confirmation delay for confident, large detections and appearance
 features to re-link tracks across gaps (the deferred ReID item).
 
+### Examples
+
+Each strip shows seven consecutive FRONT-camera frames (t-3 to t+3) cropped around the event. White is
+ground truth, thick coloured boxes with `#id` are tracker output, thin yellow boxes are raw detections.
+
+![ID switch after a gap](assets/track_id_switch_after_gap.jpg)
+
+*ID switch after a gap:* a vehicle is lost for several frames and comes back under a new track id.
+
+![Association miss at track start](assets/track_association_miss_startup.jpg)
+
+*Association miss from start-up lag:* the bus is detected from the first frame (thin yellow), but the
+tracker only outputs a track two frames later (thick blue), so those frames count as misses.
+
+![Detector miss](assets/track_detector_miss.jpg)
+
+*Detector miss:* a large bus passing close on the left, cut by the image edge, has a ground-truth box but no
+detection and no track, while the smaller vehicles and pedestrians ahead are tracked.
+
+Frames are from the Waymo Open Dataset (validation split) and are shown under the terms of the
+[Waymo Open Dataset license](https://waymo.com/open/terms).
+
 ## What this shows
 
 1. **Detection is the main limit.** Even the tuned tracker loses most objects: vehicle recall is 0.28,

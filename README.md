@@ -57,6 +57,9 @@ Known gaps: single seed everywhere (differences under about 0.01 mAP are noise),
 the 640 x 960 setting was only trained for YOLOv8n, the LiDAR official AP is very
 low and its cause is not diagnosed, and there is no HOTA.
 
+Example failure strips (ID switch, association miss, detector miss) are in
+[docs/tracking_baseline.md](docs/tracking_baseline.md#examples); the frames are from the Waymo Open Dataset.
+
 Write-ups: [decision record](docs/decision_record_stage3.md) (what advances and why)
 and [tracking baseline](docs/tracking_baseline.md) (method, metrics, failure replay).
 
