@@ -53,6 +53,37 @@ but it adds false positives at the 0.25 gate, so MOTA falls (0.166 to 0.054). Th
 fixed as IDF1 before tuning, so I kept it; the dev optimum was flat and a higher score gate would
 likely recover MOTA, but picking it after seeing the eval numbers would be tuning on the reported set.
 
+## Failure replay (YOLOv8n 640x960, run B, tuned tracker)
+
+`scripts/track_replay.py` re-runs the tracker on the cached detections, matches tracks to ground truth
+frame by frame (IoU >= 0.5, keeping the previous pairing when possible) and gives every missed
+ground-truth box a cause. It also writes image strips (3 frames before and after an event, white = ground
+truth, thick coloured = tracks with ids, thin yellow = detections) under `runs/<run>/tracking/replay/`.
+
+| Class | Ground-truth boxes | Missed | Detector miss | Association miss | ID switches (after a gap) | Fragmentations |
+|---|---|---|---|---|---|---|
+| Vehicle | 26,142 | 15,377 (59%) | 13,884 (90%) | 1,493 (10%) | 653 (421) | 822 |
+| Pedestrian | 6,901 | 5,813 (84%) | 5,612 (97%) | 201 (3%) | 16 (15) | 77 |
+| Cyclist | 453 | 328 (72%) | 310 (95%) | 18 (5%) | 6 (5) | 6 |
+
+524 tracks last fewer than 5 frames. A detector miss means no detection overlaps the box at IoU 0.5;
+an association miss means a detection above the score gate overlaps it but no track covers it. The "below
+the gate" cause is always 0 here because the cached detections already start at the 0.25 gate.
+
+What the strips show:
+
+- **Missing objects are almost all detector misses** (90 to 97%), and they are small: the median
+  missed box is 22 to 28 px on a side (vehicle 28, pedestrian 22, cyclist 22). Association is not the main loss.
+- **Association misses are larger boxes** (median side 40 to 53 px). In the strips reviewed, some are track
+  start-up lag: a new object is detected but gets no output for the first `min_hits` frames. The share
+  caused by this has not been counted.
+- **Most ID switches (421 of 653 vehicle) happen after a gap**, when an object is lost for a few frames
+  (occlusion, or a detector miss) and then picked up by a new track. Swaps between two touching objects are rarer.
+
+This agrees with the box-oracle check: the tracker is limited by detection first and by gaps second. The
+two cheap levers left are a shorter confirmation delay for confident, large detections and appearance
+features to re-link tracks across gaps (the deferred ReID item).
+
 ## What this shows
 
 1. **Detection is the main limit.** Even the tuned tracker loses most objects: vehicle recall is 0.28,
@@ -79,4 +110,10 @@ python scripts/track_eval.py --config configs/yolov8n.yaml --run-dir runs/yolov8
 python scripts/tune_tracker.py --config configs/yolov8n.yaml --run-dir runs/yolov8n-v1.2-s42
 python scripts/track_eval.py --config configs/yolov8n.yaml --run-dir runs/yolov8n-v1.2-s42 \
     --score-thresh 0.5 --iou-threshold 0.2 --max-age 40 --min-hits 1 --out runs/yolov8n-v1.2-s42/tracking/tracking_tuned.json
+```
+
+Failure replay (needs the cached detections from the first command, and the tuning file from the second):
+
+```bash
+python scripts/track_replay.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42
 ```
