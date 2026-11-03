@@ -257,11 +257,34 @@ def evaluate_camera(
                          class_names, error_counts, latencies, match_iou)
 
 
+def write_detection_dump(path: Path, frames: list[dict[str, Any]], cfg: dict[str, Any]) -> None:
+    """Save predictions and ground truth for scripts/waymo_official_eval.py.
+
+    gt rows:   cx cy cz dx dy dz heading class difficulty n_points n_top_points
+    pred rows: cx cy cz dx dy dz heading class score
+    gt_frame / pred_frame give each row's frame index. Classes are toolkit ids (0 vehicle, 1 pedestrian, 2 cyclist); boxes are in the
+    vehicle frame. Ground truth is not filtered by point count.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        segments=np.array([f["segment"] for f in frames]),
+        timestamps=np.array([f["timestamp"] for f in frames], np.int64),
+        gt=np.concatenate([f["gt"] for f in frames]).reshape(-1, 11),
+        gt_frame=np.concatenate([np.full(len(f["gt"]), i, np.int64) for i, f in enumerate(frames)]),
+        pred=np.concatenate([f["pred"] for f in frames]).reshape(-1, 9),
+        pred_frame=np.concatenate([np.full(len(f["pred"]), i, np.int64) for i, f in enumerate(frames)]),
+        top_lidar_only=bool(cfg["data"].get("top_lidar_only", True)),
+    )
+
+
 def evaluate_lidar(
     detector, model, cfg: dict[str, Any], toolkit: ToolKit, segments: list[str],
     max_frames: int | None, match_iou: float, frame_stride: int = 1,
+    dump_path: Path | None = None,
 ) -> dict[str, Any]:
     thresholds = cfg.get("eval", {}).get("iou_thresholds", {})
+    dumped: list[dict[str, Any]] = []
     class_thresholds = [float(thresholds.get(name, default))
                         for name, default in zip(LIDAR_DET_CLASS_NAMES, [0.7, 0.5, 0.5])]
     scored = [[] for _ in LIDAR_DET_CLASS_NAMES]
@@ -283,10 +306,17 @@ def evaluate_lidar(
             detections = detector.predict(model, points, cfg)
             latencies.append(time.perf_counter() - started)
             gt_boxes, gt_labels = [], []
+            frame_gt = []
             for _, row in toolkit.load_lidar_boxes(timestamp).iterrows():
                 class_id = LIDAR_DET_CLASS_MAP.get(int(row[f"{_L_BOX}.type"]))
                 if class_id is None:
                     continue
+                if dump_path is not None:
+                    frame_gt.append([float(row[f"{_L_BOX}.box.{k}"]) for k in (
+                        "center.x", "center.y", "center.z", "size.x", "size.y", "size.z", "heading")]
+                        + [class_id, int(np.nan_to_num(row[f"{_L_BOX}.difficulty_level.detection"])),
+                           int(row[f"{_L_BOX}.num_lidar_points_in_box"]),
+                           int(row[f"{_L_BOX}.num_top_lidar_points_in_box"])])
                 points_col = ("num_top_lidar_points_in_box" if cfg["data"].get("top_lidar_only", True)
                               else "num_lidar_points_in_box")
                 if int(row[f"{_L_BOX}.{points_col}"]) < int(cfg["data"].get("min_gt_points", 0)):
@@ -297,6 +327,13 @@ def evaluate_lidar(
                 ])
                 gt_labels.append(class_id)
 
+            if dump_path is not None:
+                dumped.append({
+                    "segment": segment, "timestamp": int(timestamp),
+                    "gt": np.asarray(frame_gt, np.float64).reshape(-1, 11),
+                    "pred": np.asarray([[*item["box"], int(item["label"]), float(item["score"])]
+                                        for item in detections], np.float64).reshape(-1, 9),
+                })
             for class_id in range(len(LIDAR_DET_CLASS_NAMES)):
                 class_gt = [box for box, label in zip(gt_boxes, gt_labels) if label == class_id]
                 class_detections = [item for item in detections if int(item["label"]) == class_id]
@@ -329,6 +366,8 @@ def evaluate_lidar(
         if max_frames and frames >= max_frames:
             break
 
+    if dump_path is not None:
+        write_detection_dump(dump_path, dumped, cfg)
     per_class_ap = [average_precision(items, total) for items, total in zip(scored, totals)]
     valid = [value for value in per_class_ap if value is not None]
     per_class = []
@@ -361,6 +400,8 @@ def main() -> None:
     parser.add_argument("--cameras", nargs="+", type=int, default=[1])
     parser.add_argument("--save-samples", type=int, default=12, metavar="N",
                         help="Number of camera prediction-review images to save.")
+    parser.add_argument("--dump-detections", type=Path, default=None, metavar="FILE.npz",
+                        help="LiDAR only: save boxes for the official Waymo evaluator.")
     parser.add_argument("--match-iou", type=float, default=0.5,
                         help="IoU operating point for precision/recall error counts (default: 0.5).")
     args = parser.parse_args()
@@ -381,7 +422,7 @@ def main() -> None:
     task = cfg.get("task")
     report = (
         evaluate_lidar(detector, model, cfg, toolkit, segments, args.max_frames, args.match_iou,
-                       frame_stride=args.frame_stride)
+                       frame_stride=args.frame_stride, dump_path=args.dump_detections)
         if task == "lidar_3d_detection" else
         evaluate_camera(detector, model, cfg, toolkit, segments, args.cameras, args.max_frames,
                         run_dir / "evaluation_samples", args.save_samples,

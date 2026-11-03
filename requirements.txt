@@ -24,6 +24,8 @@ plotly
 ultralytics
 torchmetrics
 pycocotools  # required by torchmetrics COCO mAP evaluation
+scipy        # Hungarian matching in the tracker
+motmetrics   # MOTA / IDF1 for scripts/track_eval.py
 pyyaml
 
 
