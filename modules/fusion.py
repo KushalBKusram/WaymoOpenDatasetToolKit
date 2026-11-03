@@ -63,7 +63,9 @@ def lidar_raster(points_xyzi: np.ndarray, camera_calibration, image_shape: tuple
     # Paint far-to-near so the visible point wins where multiple returns share
     # a pixel.  This is a sparse z-buffer rather than an artificial interpolation.
     order = np.argsort(depth)[::-1]
-    x = u[order].astype(np.intp); y = v[order].astype(np.intp)
+    # The float32 cast in the projection can round 1279.9999 up to 1280.0, so clamp.
+    x = np.minimum(u[order].astype(np.intp), width - 1)
+    y = np.minimum(v[order].astype(np.intp), height - 1)
     raster[y, x, 0] = np.clip(depth[order] / max_depth, 0.0, 1.0)
     raster[y, x, 1] = np.clip(intensity[order], 0.0, 1.0)
     return raster

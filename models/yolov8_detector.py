@@ -25,12 +25,38 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
 
 from models import register_detector
 from models.base_detector import BaseDetector
+
+
+def load_with_new_head(model_cls, yaml_name: str, pretrained: nn.Module, cfg: dict,
+                       in_channels: int = 3) -> nn.Module:
+    """Build ``model_cls`` for our classes and copy every matching pretrained tensor.
+
+    The COCO classification head (80 classes) does not match ours, so it keeps
+    its fresh initialisation; the backbone and box branches are transferred.
+    Extra input channels start from the mean of the pretrained RGB filters.
+    """
+    num_classes = int(cfg['model'].get('num_classes', 4))
+    names = cfg['model'].get('class_names') or [str(i) for i in range(num_classes)]
+    if in_channels == 3 and getattr(pretrained, 'nc', None) == num_classes:
+        model = pretrained
+    else:
+        model = model_cls(yaml_name, ch=in_channels, nc=num_classes, verbose=False)
+        model.load(pretrained, verbose=False)
+        if in_channels != 3:
+            old = pretrained.model[0].conv.weight.data
+            new = model.model[0].conv.weight.data
+            new[:, :3] = old
+            new[:, 3:] = old.mean(dim=1, keepdim=True)
+    model.names = {index: name for index, name in enumerate(names)}
+    model.nc = num_classes   # the Ultralytics trainer sets this; RT-DETR's loss reads it
+    return model
 
 
 @register_detector('YOLOv8Detector')
@@ -42,8 +68,19 @@ class YOLOv8Detector(BaseDetector):
     are handled internally.
     """
 
+    input_channels = 3
+
     def __init__(self, cfg: dict):
         self.cfg = cfg
+
+    def _default_weights(self, cfg: dict) -> str:
+        return f"yolov8{cfg['model'].get('backbone', 'n')}.pt"
+
+    def _model_spec(self, cfg: dict):
+        """(Ultralytics loader class, model class, model yaml) for this family."""
+        from ultralytics import YOLO
+        from ultralytics.nn.tasks import DetectionModel
+        return YOLO, DetectionModel, f"yolov8{cfg['model'].get('backbone', 'n')}.yaml"
 
     # ── BaseDetector ─────────────────────────────────────────────────────────
 
@@ -64,9 +101,10 @@ class YOLOv8Detector(BaseDetector):
                 'Run: pip install ultralytics'
             ) from exc
 
-        backbone = cfg['model'].get('backbone', 'n')
-        weights  = cfg.get('resume_weights') or f'yolov8{backbone}.pt'
+        loader, model_cls, yaml_name = self._model_spec(cfg)
+        weights  = cfg.get('resume_weights') or self._default_weights(cfg)
 
+        nn_model = None
         path = Path(weights)
         if path.exists():
             ckpt = torch.load(weights, map_location=device, weights_only=False)
@@ -76,12 +114,14 @@ class YOLOv8Detector(BaseDetector):
             if isinstance(ckpt, dict) and 'seg' in ckpt and isinstance(ckpt.get('model'), nn.Module):
                 nn_model = ckpt['model'].float().to(device)
                 print(f'Resumed from segment {ckpt["seg"]}')
-            else:
-                # Ultralytics format: let YOLO normalize its own checkpoint format.
-                nn_model = YOLO(weights).model.float().to(device)
-        else:
-            # Fresh pretrained weights (auto-downloaded from Ultralytics)
-            nn_model = YOLO(weights).model.to(device)
+        if nn_model is None:
+            # Pretrained Ultralytics weights (auto-downloaded if absent). The COCO
+            # head has 80 classes, so rebuild a head for our classes and keep the
+            # backbone and box branches.
+            pretrained = loader(weights).model.float()
+            nn_model = load_with_new_head(
+                model_cls, yaml_name, pretrained, cfg, self.input_channels,
+            ).to(device)
 
         # v8DetectionLoss reads model.args as an IterableSimpleNamespace.
         # When loaded outside the Ultralytics training loop, args may be a
@@ -114,26 +154,36 @@ class YOLOv8Detector(BaseDetector):
 
         Returns list of {'box': [x1,y1,x2,y2], 'label': int, 'score': float}.
         """
-        from ultralytics import YOLO
-
         eval_cfg = cfg.get('eval', {})
         conf     = eval_cfg.get('conf', 0.25)
         iou      = eval_cfg.get('iou',  0.45)
         img_size = cfg['data'].get('img_size', 640)
-        backbone = cfg['model'].get('backbone', 'n')
 
-        # Wrap the raw nn.Module in a YOLO shell for inference
-        yolo = YOLO(f'yolov8{backbone}.pt')
-        yolo.model = model.eval()
+        # Wrap the raw nn.Module in an Ultralytics shell once; rebuilding it per
+        # frame reloads weights from disk and dominates measured latency.
+        shells = self.__dict__.setdefault('_yolo_shells', {})
+        yolo = shells.get(id(model))
+        if yolo is None:
+            loader = self._model_spec(cfg)[0]
+            yolo = loader(self._default_weights(cfg))
+            yolo.model = model.eval()
+            shells[id(model)] = yolo
 
-        results    = yolo.predict(img_bgr, conf=conf, iou=iou,
+        # Training squashes every image to a square (labels are normalised), so
+        # do the same here instead of letting predict() letterbox. Boxes come
+        # back in square-image pixels and are scaled to the original frame.
+        height, width = img_bgr.shape[:2]
+        squashed = cv2.resize(img_bgr, (img_size, img_size))
+        results    = yolo.predict(squashed, conf=conf, iou=iou,
                                   imgsz=img_size, verbose=False)
+        scale = (width / img_size, height / img_size, width / img_size, height / img_size)
         detections: list[dict] = []
         r = results[0]
         if r.boxes is not None and len(r.boxes):
             for i in range(len(r.boxes)):
+                box = r.boxes.xyxy[i].cpu().tolist()
                 detections.append({
-                    'box':   r.boxes.xyxy[i].cpu().tolist(),
+                    'box':   [coord * factor for coord, factor in zip(box, scale)],
                     'label': int(r.boxes.cls[i]),
                     'score': float(r.boxes.conf[i]),
                 })

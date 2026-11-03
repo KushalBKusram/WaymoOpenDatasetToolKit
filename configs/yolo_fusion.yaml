@@ -1,0 +1,38 @@
+# YOLOv8n with calibrated LiDAR depth + intensity as two extra input channels.
+# Identical to yolov8n.yaml apart from the 5-channel input, so the pair isolates the LiDAR contribution.
+name: yolo_fusion
+task: camera_lidar_fusion_2d_detection
+
+model:
+  type: YOLOFusionDetector
+  backbone: n
+  num_classes: 4
+  class_names: [vehicle, pedestrian, cyclist, sign]
+
+data:
+  split: training
+  cameras: [1]
+  img_size: 512
+  top_lidar_only: true
+  fusion_max_depth: 75.0
+  max_frames_per_seg: null
+  manifest: configs/benchmark_splits.json
+  frame_stride: 1
+  num_workers: 3               # parallel batch building; speed only, results are unchanged
+
+train:
+  device: auto
+  seed: 42
+  total_segs: 20
+  passes: 10                   # passes over all training segments (shuffled each pass)
+  epochs_per_seg: 1            # epochs each time a segment is visited
+  batch_size: 8
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 10.0
+  save_every: 5
+
+eval:
+  segs: 10
+  conf: 0.25
+  iou: 0.45

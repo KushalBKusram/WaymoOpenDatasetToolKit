@@ -31,6 +31,8 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import math
+import random
 import sys
 from pathlib import Path
 
@@ -40,7 +42,12 @@ import torch
 import yaml
 from torch.utils.data import DataLoader, Dataset
 
+# Share batches between workers through shared-memory files, not file descriptors:
+# a new DataLoader per segment otherwise exhausts the open-file limit on long runs.
+torch.multiprocessing.set_sharing_strategy('file_system')
+
 from models import build_detector
+from modules.benchmark import load_split_manifest, stride_timestamps
 from modules.run_artifacts import RunArtifacts
 from modules.fusion import build_fusion_tensor
 from modules.runtime import resolve_torch_device, set_global_seed
@@ -67,6 +74,7 @@ class WaymoGCSDataset(Dataset):
         imgsz:       Square image size to resize to.
         cameras:     Camera IDs to include.
         max_frames:  Optional limit on timestamps per segment (for smoke tests).
+        frame_stride: Keep every Nth timestamp (applied before max_frames).
     """
 
     def __init__(
@@ -75,13 +83,16 @@ class WaymoGCSDataset(Dataset):
         imgsz: int = 640,
         cameras: tuple = (1, 2, 3, 4, 5),
         max_frames: int | None = None,
+        frame_stride: int = 1,
     ):
         self.toolkit = toolkit
         self.imgsz   = imgsz
 
         cam_df       = toolkit._read_cached('camera_image')
         self.box_df  = toolkit._read_cached('camera_box')
-        timestamps = sorted(cam_df['key.frame_timestamp_micros'].unique().tolist())
+        timestamps = stride_timestamps(
+            sorted(cam_df['key.frame_timestamp_micros'].unique().tolist()), frame_stride
+        )
         if max_frames is not None:
             timestamps = timestamps[:max_frames]
         selected_timestamps = set(timestamps)
@@ -136,8 +147,9 @@ class WaymoCameraLiDARFusionDataset(WaymoGCSDataset):
 
     def __init__(self, toolkit: ToolKit, imgsz: int = 512, cameras: tuple = (1,),
                  top_lidar_only: bool = True, max_depth: float = 75.0,
-                 max_frames: int | None = None):
-        super().__init__(toolkit, imgsz=imgsz, cameras=cameras, max_frames=max_frames)
+                 max_frames: int | None = None, frame_stride: int = 1):
+        super().__init__(toolkit, imgsz=imgsz, cameras=cameras,
+                         max_frames=max_frames, frame_stride=frame_stride)
         self.top_lidar_only = top_lidar_only
         self.max_depth = max_depth
         self.calibrations = {camera: toolkit.load_camera_calibration(camera) for camera in cameras}
@@ -145,7 +157,7 @@ class WaymoCameraLiDARFusionDataset(WaymoGCSDataset):
     def __getitem__(self, i: int):
         image, labels = self._load_image_and_labels(i)
         timestamp, camera = self.index[i]
-        point_sets = self.toolkit.load_lidar_points_xyzi(timestamp)
+        point_sets = self.toolkit.load_lidar_points_xyzi(timestamp, top_only=self.top_lidar_only)
         if self.top_lidar_only and point_sets:
             point_sets = [max(point_sets, key=len)]
         points = np.concatenate(point_sets, axis=0).astype(np.float32) if point_sets else np.zeros((0, 4), np.float32)
@@ -171,10 +183,13 @@ class WaymoLiDARDataset(Dataset):
     """
 
     def __init__(self, toolkit: ToolKit, top_lidar_only: bool = True,
-                 max_frames: int | None = None):
+                 max_frames: int | None = None, frame_stride: int = 1,
+                 min_gt_points: int = 0):
         self.toolkit        = toolkit
         self.top_lidar_only = top_lidar_only
-        self.timestamps     = toolkit.get_timestamps()
+        self.min_gt_points  = min_gt_points   # boxes with fewer LiDAR points cannot be detected
+        toolkit._read_cached('lidar_box')   # load in the parent so DataLoader workers never touch Dask
+        self.timestamps     = stride_timestamps(toolkit.get_timestamps(), frame_stride)
         if max_frames is not None:
             self.timestamps = self.timestamps[:max_frames]
         print(f'   {len(self.timestamps)} LiDAR frames in segment'
@@ -187,7 +202,7 @@ class WaymoLiDARDataset(Dataset):
         ts = self.timestamps[i]
 
         # ── Points ──────────────────────────────────────────────────────────
-        pts_list = self.toolkit.load_lidar_points_xyzi(ts)   # list[(N_l, 4)]
+        pts_list = self.toolkit.load_lidar_points_xyzi(ts, top_only=self.top_lidar_only)   # list[(N_l, 4)]
         if pts_list:
             if self.top_lidar_only:
                 # TOP lidar (laser 1) always has far more returns than the 4
@@ -206,6 +221,9 @@ class WaymoLiDARDataset(Dataset):
         for _, row in boxes_df.iterrows():
             type_int = int(row[f'{_L_BOX}.type'])
             if type_int not in LIDAR_DET_CLASS_MAP:
+                continue
+            points_col = 'num_top_lidar_points_in_box' if self.top_lidar_only else 'num_lidar_points_in_box'
+            if int(row[f'{_L_BOX}.{points_col}']) < self.min_gt_points:
                 continue
             cx  = float(row[f'{_L_BOX}.box.center.x'])
             cy  = float(row[f'{_L_BOX}.box.center.y'])
@@ -259,13 +277,26 @@ class ProgressTracker:
             data = json.loads(path.read_text())
             self.trained = data.get('trained', [])
             self.pending = data.get('pending', [])
+            self.pass_no = data.get('pass', 1)
+            self.segments = data.get('segments', self.trained + self.pending)
         else:
             self.trained = []
             self.pending = []
+            self.pass_no = 1
+            self.segments = []
 
     def initialise(self, all_segments: list):
+        self.segments = list(all_segments)
         done = set(self.trained)
         self.pending = [s for s in all_segments if s not in done]
+        self._write()
+
+    def next_pass(self, seed: int):
+        """Start another pass over every segment, in a seeded shuffled order."""
+        self.pass_no += 1
+        order = list(self.segments)
+        random.Random(seed + self.pass_no).shuffle(order)
+        self.trained, self.pending = [], order
         self._write()
 
     def mark_done(self, seg: str):
@@ -283,7 +314,8 @@ class ProgressTracker:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
             json.dumps(
-                {'trained': self.trained, 'pending': self.pending},
+                {'trained': self.trained, 'pending': self.pending,
+                 'pass': self.pass_no, 'segments': self.segments},
                 indent=2,
             )
         )
@@ -320,6 +352,12 @@ def train(cfg: dict, drive_dir: Path, resume: bool = False):
         lr=train_cfg['lr'],
         weight_decay=train_cfg['weight_decay'],
     )
+    if resume and latest_ckpt.exists():
+        saved = torch.load(latest_ckpt, map_location=device, weights_only=False)
+        if isinstance(saved, dict) and saved.get('optimizer'):
+            optimizer.load_state_dict(saved['optimizer'])
+            print('Restored optimizer state')
+        del saved
 
     task = cfg.get('task', 'camera_2d_detection')
     backbone_info = (f'backbone={cfg["model"]["backbone"]}'
@@ -341,9 +379,15 @@ def train(cfg: dict, drive_dir: Path, resume: bool = False):
     tracker = ProgressTracker(progress_file)
     toolkit = ToolKit(split=cfg['data']['split'])
 
-    if not tracker.pending:
-        print('\nFetching segment list from GCS ...')
-        all_segs   = toolkit.list_segments()
+    passes = int(train_cfg.get('passes', 1))
+    if not tracker.segments:
+        manifest_path = cfg['data'].get('manifest')
+        if manifest_path:
+            print(f'\nUsing frozen training segments from {manifest_path} ...')
+            all_segs = load_split_manifest(manifest_path)['train']
+        else:
+            print('\nFetching segment list from GCS ...')
+            all_segs = toolkit.list_segments()
         total_segs = train_cfg.get('total_segs')
         tracker.initialise(
             all_segs if total_segs is None else all_segs[:total_segs]
@@ -356,12 +400,29 @@ def train(cfg: dict, drive_dir: Path, resume: bool = False):
     # Dataset class is selected by cfg['task']; collate_fn always from detector.
     cameras  = tuple(cfg['data'].get('cameras', [1, 2, 3, 4, 5]))
     img_size = cfg['data'].get('img_size', 640)
+    stride   = cfg['data'].get('frame_stride', 1)
 
-    global_epoch = len(tracker.trained) * train_cfg['epochs_per_seg']
-    for seg in list(tracker.pending):
+    global_epoch = ((tracker.pass_no - 1) * len(tracker.segments)
+                    + len(tracker.trained)) * train_cfg['epochs_per_seg']
+    while tracker.pending or tracker.pass_no < passes:
+        if not tracker.pending:
+            tracker.next_pass(int(train_cfg.get('seed', 42)))
+            print(f'\n=== Pass {tracker.pass_no}/{passes} ===')
+            continue
+        seg = tracker.pending[0]
         seg_num = len(tracker.trained) + 1
+        unit    = (tracker.pass_no - 1) * len(tracker.segments) + seg_num
         total   = len(tracker.trained) + len(tracker.pending)
-        print(f'\n── Segment [{seg_num}/{total}] ──────────────────────────────')
+        print(f'\n── Pass {tracker.pass_no}/{passes}  Segment [{seg_num}/{total}] ─────────────')
+        if train_cfg.get('lr_schedule') == 'cosine':
+            # Piecewise-constant per segment visit, so it resumes exactly from `unit`.
+            warmup = int(train_cfg.get('warmup_units', 0))
+            if warmup and unit <= warmup:
+                factor = unit / warmup
+            else:
+                factor = 0.5 * (1 + math.cos(math.pi * (unit - 1) / max(passes * len(tracker.segments), 1)))
+            for group in optimizer.param_groups:
+                group['lr'] = train_cfg['lr'] * max(factor, 0.01)
         print(f'   {seg[:72]}')
 
         toolkit.assign_segment(seg)
@@ -371,24 +432,28 @@ def train(cfg: dict, drive_dir: Path, resume: bool = False):
                 top_lidar_only=cfg['data'].get('top_lidar_only', True),
                 max_depth=cfg['data'].get('fusion_max_depth', 75.0),
                 max_frames=cfg['data'].get('max_frames_per_seg'),
+                frame_stride=stride,
             )
         elif task == 'lidar_3d_detection':
             dataset = WaymoLiDARDataset(
                 toolkit,
                 top_lidar_only=cfg['data'].get('top_lidar_only', True),
                 max_frames=cfg['data'].get('max_frames_per_seg'),
+                frame_stride=stride,
+                min_gt_points=int(cfg['data'].get('min_gt_points', 0)),
             )
         else:
             dataset = WaymoGCSDataset(
                 toolkit, imgsz=img_size, cameras=cameras,
                 max_frames=cfg['data'].get('max_frames_per_seg'),
+                frame_stride=stride,
             )
         loader  = DataLoader(
             dataset,
             batch_size=train_cfg['batch_size'],
             shuffle=True,
             collate_fn=detector.collate_fn,
-            num_workers=0,
+            num_workers=int(cfg['data'].get('num_workers', 0)),
             pin_memory=(device.type == 'cuda'),
         )
         print(f'   {len(dataset)} samples  ({len(loader)} batches)')
@@ -449,10 +514,10 @@ def train(cfg: dict, drive_dir: Path, resume: bool = False):
             torch.mps.empty_cache()
 
         # ── Save checkpoint ───────────────────────────────────────────────────
-        if seg_num % train_cfg['save_every'] == 0 or not tracker.pending:
-            ckpt_path = ckpt_dir / f'seg_{seg_num:04d}.pt'
-            save_checkpoint(nn_model, optimizer, seg_num, ckpt_path)
-            save_checkpoint(nn_model, optimizer, seg_num, latest_ckpt)
+        if unit % train_cfg['save_every'] == 0 or not tracker.pending:
+            ckpt_path = ckpt_dir / f'seg_{unit:04d}.pt'
+            save_checkpoint(nn_model, optimizer, unit, ckpt_path)
+            save_checkpoint(nn_model, optimizer, unit, latest_ckpt)
             print(f'   Checkpoint → {ckpt_path}')
 
     print(f'\nTraining complete.  Latest weights: {latest_ckpt}')
@@ -502,6 +567,27 @@ def parse_args() -> argparse.Namespace:
         help='Limit timestamps per segment for any backend (useful for fast local tests).',
     )
     p.add_argument(
+        '--epochs-per-seg',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Override train.epochs_per_seg from the YAML.',
+    )
+    p.add_argument(
+        '--passes',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Override train.passes from the YAML (passes over all training segments).',
+    )
+    p.add_argument(
+        '--frame-stride',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Override data.frame_stride from the YAML (1 = every frame).',
+    )
+    p.add_argument(
         '--lr',
         type=float,
         default=None,
@@ -537,6 +623,12 @@ if __name__ == '__main__':
         cfg['train']['total_segs'] = args.total_segs
     if args.batch is not None:
         cfg['train']['batch_size'] = args.batch
+    if args.passes is not None:
+        cfg['train']['passes'] = args.passes
+    if args.epochs_per_seg is not None:
+        cfg['train']['epochs_per_seg'] = args.epochs_per_seg
+    if args.frame_stride is not None:
+        cfg['data']['frame_stride'] = args.frame_stride
     if args.lr is not None:
         cfg['train']['lr'] = args.lr
     if args.device is not None:

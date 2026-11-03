@@ -264,9 +264,10 @@ class PillarFeatureNet(nn.Module):
             (P, D) float32
         """
         P, T, C = pillars.shape
+        valid = (pillars.abs().sum(dim=-1) > 0).unsqueeze(-1)   # padded points are exactly zero
         x = pillars.reshape(P * T, C)
         x = self.act(self.bn(self.linear(x)))
-        x = x.reshape(P, T, self.out_channels)
+        x = x.reshape(P, T, self.out_channels) * valid          # ReLU output >= 0, so 0 is neutral
         x = x.max(dim=1)[0]   # (P, D)
         return x
 
@@ -596,11 +597,18 @@ class PointPillarsDetector(BaseDetector):
         Hs  = grid_shape[0] // stride
         Ws  = grid_shape[1] // stride
 
+        # Keep only local maxima of the heatmap (3x3 max-pool NMS) and the best
+        # `max_dets` per class; otherwise every cell around a peak is a detection.
+        peaks = (hm == torch.nn.functional.max_pool2d(hm[None], 3, stride=1, padding=1)[0])
+        max_dets = int(cfg['eval'].get('max_dets', 100))
+
         detections = []
         for cls in range(num_classes):
             cls_hm = hm[cls]                              # (H', W')
             scores = cls_hm.cpu().numpy().flatten()
-            idxs   = np.where(scores >= score_thresh)[0]
+            is_peak = peaks[cls].cpu().numpy().flatten()
+            idxs   = np.where(is_peak & (scores >= score_thresh))[0]
+            idxs   = idxs[np.argsort(-scores[idxs])][:max_dets]
             for flat_idx in idxs:
                 gy = flat_idx // Ws
                 gx = flat_idx %  Ws

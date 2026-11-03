@@ -23,28 +23,35 @@ voxel:
   y_range: [-50.0, 50.0]
   z_range: [-3.0,   3.0]
   voxel_size: [0.25, 0.25]   # metres per pillar; 400×400 BEV
-  max_pillars: 4096           # was 6000; reduced for T4 (15 GB VRAM / 12 GB RAM)
+  max_pillars: 16000          # 4096 dropped the sparse pillars where distant objects sit
   max_points_per_pillar: 20
 
 data:
   split: training
   top_lidar_only: true        # use TOP lidar only; side lasers add ~4× memory, <5% detection value
   # max_frames_per_seg: null  # uncomment + set integer to limit frames per segment
+  manifest: configs/benchmark_splits.json
+  frame_stride: 1
+  min_gt_points: 5             # boxes with fewer TOP-lidar points cannot be detected (Waymo L1 also excludes them)
+  num_workers: 4               # parallel batch building; speed only, results are unchanged
 
 train:
   total_segs: 20            # null = all segments in the split
-  epochs_per_seg: 3
-  batch_size: 1             # was 2; reduced to avoid OOM on Colab free T4
+  passes: 10                # passes over all training segments (shuffled each pass)
+  epochs_per_seg: 1         # epochs each time a segment is visited
+  batch_size: 4
+  lr_schedule: cosine
+  warmup_units: 2
   lr: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 35.0
   save_every: 5
 
 eval:
-  segs: 5
+  segs: 10
   score_thresh: 0.2         # peak heatmap threshold for detections
   nms_iou: 0.2              # 3-D BEV IoU threshold for NMS (informational)
-  # mAP computed at 3-D IoU 0.7 (vehicle), 0.5 (ped/cyclist) — Waymo metric
+  # BEV axis-aligned AP proxy at IoU 0.7 (vehicle), 0.5 (ped/cyclist); not the official Waymo metric
   iou_thresholds:
     vehicle:    0.7
     pedestrian: 0.5

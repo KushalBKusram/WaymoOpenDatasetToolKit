@@ -81,3 +81,5 @@ from . import pointpillars_detector  # noqa: F401, E402
 from . import transformer_detector    # noqa: F401, E402
 from . import fusion_detector         # noqa: F401, E402
 from . import centerpoint_detector    # noqa: F401, E402
+from . import rtdetr_detector         # noqa: F401, E402
+from . import yolo_fusion_detector    # noqa: F401, E402

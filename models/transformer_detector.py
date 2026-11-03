@@ -108,6 +108,50 @@ class _ConvEncoder(nn.Module):
         return self.layers(image)
 
 
+class _ResNetEncoder(nn.Module):
+    """ImageNet-pretrained ResNet trunk (stride 16) projected to ``hidden_dim``.
+
+    Extra input channels (fusion depth/intensity) get conv1 filters initialised
+    to the mean RGB filter. Batch norm stays in eval mode: batches here are too
+    small to estimate fresh statistics.
+    """
+
+    def __init__(self, in_channels: int, hidden_dim: int, name: str = 'resnet18',
+                 pretrained: bool = True):
+        super().__init__()
+        import torchvision
+
+        net = getattr(torchvision.models, name)(weights='DEFAULT' if pretrained else None)
+        if in_channels != 3:
+            old = net.conv1
+            conv = nn.Conv2d(in_channels, old.out_channels, old.kernel_size,
+                             old.stride, old.padding, bias=False)
+            with torch.no_grad():
+                conv.weight[:, :3] = old.weight
+                conv.weight[:, 3:] = old.weight.mean(dim=1, keepdim=True)
+            net.conv1 = conv
+        self.trunk = nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool,
+                                   net.layer1, net.layer2, net.layer3)
+        self.trunk.eval()
+        with torch.no_grad():
+            trunk_channels = self.trunk(torch.zeros(1, in_channels, 64, 64)).shape[1]
+        self.project = nn.Conv2d(trunk_channels, hidden_dim, 1)
+        self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        for module in self.trunk.modules():
+            if isinstance(module, nn.BatchNorm2d):
+                module.eval()
+        return self
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        rgb = (image[:, :3] - self.mean) / self.std
+        x = rgb if image.shape[1] == 3 else torch.cat((rgb, image[:, 3:]), dim=1)
+        return self.project(self.trunk(x))
+
+
 def _sine_position_encoding(height: int, width: int, dim: int,
                             device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     """Return (H*W, dim) 2-D sine/cosine positional encodings."""
@@ -130,9 +174,11 @@ class QueryTransformerDetector(nn.Module):
 
     def __init__(self, num_classes: int, in_channels: int = 3, hidden_dim: int = 128,
                  num_queries: int = 100, num_encoder_layers: int = 3,
-                 num_decoder_layers: int = 3, nhead: int = 8):
+                 num_decoder_layers: int = 3, nhead: int = 8,
+                 encoder: str = 'conv', pretrained: bool = True):
         super().__init__()
-        self.encoder = _ConvEncoder(in_channels, hidden_dim)
+        self.encoder = (_ConvEncoder(in_channels, hidden_dim) if encoder == 'conv'
+                        else _ResNetEncoder(in_channels, hidden_dim, encoder, pretrained))
         encoder_layer = nn.TransformerEncoderLayer(hidden_dim, nhead, hidden_dim * 4,
                                                    dropout=0.1, batch_first=True,
                                                    activation='gelu', norm_first=True)
@@ -178,6 +224,8 @@ class TransformerDetector(BaseDetector):
             num_encoder_layers=model_cfg.get('num_encoder_layers', 3),
             num_decoder_layers=model_cfg.get('num_decoder_layers', 3),
             nhead=model_cfg.get('nhead', 8),
+            encoder=model_cfg.get('encoder', 'conv'),
+            pretrained=model_cfg.get('pretrained', True),
         )
         weights = cfg.get('resume_weights')
         if weights:

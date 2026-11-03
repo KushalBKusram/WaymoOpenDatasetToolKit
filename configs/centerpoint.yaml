@@ -13,27 +13,34 @@ voxel:
   y_range: [-50.0, 50.0]
   z_range: [-3.0, 3.0]
   voxel_size: [0.25, 0.25]
-  max_pillars: 4096
+  max_pillars: 16000
   max_points_per_pillar: 20
 
 data:
   split: training
   top_lidar_only: true
   max_frames_per_seg: null
+  manifest: configs/benchmark_splits.json
+  frame_stride: 1
+  min_gt_points: 5             # boxes with fewer TOP-lidar points cannot be detected (Waymo L1 also excludes them)
+  num_workers: 4               # parallel batch building; speed only, results are unchanged
 
 train:
   device: auto
   seed: 42
   total_segs: 20
-  epochs_per_seg: 3
-  batch_size: 1
+  passes: 10                   # passes over all training segments (shuffled each pass)
+  epochs_per_seg: 1            # epochs each time a segment is visited
+  batch_size: 4
+  lr_schedule: cosine
+  warmup_units: 2
   lr: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 35.0
   save_every: 5
 
 eval:
-  segs: 5
+  segs: 10
   score_thresh: 0.2
   nms_iou: 0.2
   iou_thresholds:

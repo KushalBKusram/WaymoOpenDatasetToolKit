@@ -22,6 +22,7 @@ import torch
 import yaml
 
 from models import build_detector
+from modules.benchmark import load_split_manifest, stride_timestamps
 from modules.run_artifacts import RunArtifacts
 from modules.runtime import resolve_torch_device
 from modules.visualize import draw_camera_boxes
@@ -191,18 +192,19 @@ def save_camera_sample(image: np.ndarray, gt_rows, detections: list[dict[str, An
 def evaluate_camera(
     detector, model, cfg: dict[str, Any], toolkit: ToolKit, segments: list[str], cameras: list[int],
     max_frames: int | None, sample_dir: Path, sample_limit: int, fusion: bool, match_iou: float,
+    frame_stride: int = 1,
 ) -> dict[str, Any]:
     from torchmetrics.detection import MeanAveragePrecision
 
     class_names = cfg["model"].get("class_names", ["vehicle", "pedestrian", "cyclist", "sign"])
-    metric = MeanAveragePrecision(iou_type="bbox", box_format="xyxy")
+    metric = MeanAveragePrecision(iou_type="bbox", box_format="xyxy", class_metrics=True)
     error_counts = _counts(len(class_names))
     latencies: list[float] = []
     frames = 0
 
     for segment in segments:
         toolkit.assign_segment(segment)
-        for timestamp in toolkit.get_timestamps():
+        for timestamp in stride_timestamps(toolkit.get_timestamps(), frame_stride):
             for camera in cameras:
                 image = toolkit.load_camera_frame(timestamp, camera)
                 gt_rows = toolkit.load_camera_boxes(timestamp, camera)
@@ -216,18 +218,20 @@ def evaluate_camera(
                     gt_boxes.append([cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2])
                     gt_labels.append(class_id)
 
-                started = time.perf_counter()
                 if fusion:
-                    point_sets = toolkit.load_lidar_points_xyzi(timestamp)
+                    point_sets = toolkit.load_lidar_points_xyzi(
+                        timestamp, top_only=cfg["data"].get("top_lidar_only", True))
                     if cfg["data"].get("top_lidar_only", True) and point_sets:
                         point_sets = [max(point_sets, key=len)]
                     points = (np.concatenate(point_sets, axis=0).astype(np.float32)
                               if point_sets else np.zeros((0, 4), np.float32))
+                    calibration = toolkit.load_camera_calibration(camera)
+                    started = time.perf_counter()
                     detections = detector.predict(
-                        model, image, cfg, lidar_points=points,
-                        camera_calibration=toolkit.load_camera_calibration(camera),
+                        model, image, cfg, lidar_points=points, camera_calibration=calibration,
                     )
                 else:
+                    started = time.perf_counter()
                     detections = detector.predict(model, image, cfg)
                 latencies.append(time.perf_counter() - started)
 
@@ -255,7 +259,7 @@ def evaluate_camera(
 
 def evaluate_lidar(
     detector, model, cfg: dict[str, Any], toolkit: ToolKit, segments: list[str],
-    max_frames: int | None, match_iou: float,
+    max_frames: int | None, match_iou: float, frame_stride: int = 1,
 ) -> dict[str, Any]:
     thresholds = cfg.get("eval", {}).get("iou_thresholds", {})
     class_thresholds = [float(thresholds.get(name, default))
@@ -269,8 +273,9 @@ def evaluate_lidar(
 
     for segment in segments:
         toolkit.assign_segment(segment)
-        for timestamp in toolkit.get_timestamps():
-            point_sets = toolkit.load_lidar_points_xyzi(timestamp)
+        for timestamp in stride_timestamps(toolkit.get_timestamps(), frame_stride):
+            point_sets = toolkit.load_lidar_points_xyzi(
+                timestamp, top_only=cfg["data"].get("top_lidar_only", True))
             if cfg["data"].get("top_lidar_only", True) and point_sets:
                 point_sets = [max(point_sets, key=len)]
             points = np.concatenate(point_sets, axis=0) if point_sets else np.zeros((0, 4), np.float32)
@@ -281,6 +286,10 @@ def evaluate_lidar(
             for _, row in toolkit.load_lidar_boxes(timestamp).iterrows():
                 class_id = LIDAR_DET_CLASS_MAP.get(int(row[f"{_L_BOX}.type"]))
                 if class_id is None:
+                    continue
+                points_col = ("num_top_lidar_points_in_box" if cfg["data"].get("top_lidar_only", True)
+                              else "num_lidar_points_in_box")
+                if int(row[f"{_L_BOX}.{points_col}"]) < int(cfg["data"].get("min_gt_points", 0)):
                     continue
                 gt_boxes.append([
                     float(row[f"{_L_BOX}.box.center.x"]), float(row[f"{_L_BOX}.box.center.y"]),
@@ -347,6 +356,8 @@ def main() -> None:
     parser.add_argument("--run-dir", default="./runs/waymo")
     parser.add_argument("--segments", type=int, default=None)
     parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--frame-stride", type=int, default=1,
+                        help="Evaluate every Nth frame (default 1: all frames, per the benchmark protocol).")
     parser.add_argument("--cameras", nargs="+", type=int, default=[1])
     parser.add_argument("--save-samples", type=int, default=12, metavar="N",
                         help="Number of camera prediction-review images to save.")
@@ -363,14 +374,19 @@ def main() -> None:
     detector = build_detector(cfg)
     model = detector.build_model(cfg, device).eval()
     toolkit = ToolKit(split="validation")
-    segments = toolkit.list_segments()[:args.segments or cfg.get("eval", {}).get("segs", 5)]
+    manifest_path = cfg.get("data", {}).get("manifest")
+    all_segments = (load_split_manifest(manifest_path)["eval"] if manifest_path
+                    else toolkit.list_segments())
+    segments = all_segments[:args.segments or cfg.get("eval", {}).get("segs", 5)]
     task = cfg.get("task")
     report = (
-        evaluate_lidar(detector, model, cfg, toolkit, segments, args.max_frames, args.match_iou)
+        evaluate_lidar(detector, model, cfg, toolkit, segments, args.max_frames, args.match_iou,
+                       frame_stride=args.frame_stride)
         if task == "lidar_3d_detection" else
         evaluate_camera(detector, model, cfg, toolkit, segments, args.cameras, args.max_frames,
                         run_dir / "evaluation_samples", args.save_samples,
-                        fusion=(task == "camera_lidar_fusion_2d_detection"), match_iou=args.match_iou)
+                        fusion=(task == "camera_lidar_fusion_2d_detection"), match_iou=args.match_iou,
+                        frame_stride=args.frame_stride)
     )
     report.update({"checkpoint": str(checkpoint), "segments": segments, "device": str(device)})
     artifacts = RunArtifacts(run_dir, cfg)

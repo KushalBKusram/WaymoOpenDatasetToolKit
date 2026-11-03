@@ -200,6 +200,7 @@ class ToolKit:
         self.cache_dir = cache_dir
         self.context_name: str | None = None
         self._df_cache: dict[str, pd.DataFrame] = {}
+        self._frame_index: dict = {}
         self._setup_dirs()
 
     # -----------------------------------------------------------------------
@@ -235,8 +236,27 @@ class ToolKit:
         """Return a lazy Dask DataFrame for one component of the segment."""
         return dd.read_parquet(self._gcs_path(component), columns=columns, filters=filters)
 
+    _INDEXED_COMPONENTS = ('camera_image', 'camera_box', 'lidar_box')
+
     def _read_frame_rows(self, component: str, timestamp: int, camera_name: int | None = None) -> pd.DataFrame:
-        """Read only one frame from the local cache or GCS, without caching a full component."""
+        """Rows for one frame.
+
+        Per-segment components small enough to hold in memory are loaded once and
+        indexed by timestamp (and camera); a Dask query per sample was the
+        training bottleneck. Other components are filtered from Parquet on demand.
+        """
+        if component in self._INDEXED_COMPONENTS:
+            keys = ['key.frame_timestamp_micros']
+            if camera_name is not None:
+                keys.append('key.camera_name')
+            index_key = (component, len(keys))
+            df = self._read_cached(component)
+            if index_key not in self._frame_index:
+                self._frame_index[index_key] = df.groupby(
+                    keys[0] if len(keys) == 1 else keys, sort=False).indices
+            positions = self._frame_index[index_key].get(
+                timestamp if camera_name is None else (timestamp, camera_name))
+            return df.iloc[positions] if positions is not None else df.iloc[0:0]
         filters = [("key.frame_timestamp_micros", "==", timestamp)]
         if camera_name is not None:
             filters.append(("key.camera_name", "==", camera_name))
@@ -286,6 +306,7 @@ class ToolKit:
         """Set the active segment; clears the DataFrame cache."""
         self.context_name = context_name
         self._df_cache = {}
+        self._frame_index = {}
 
     # -----------------------------------------------------------------------
     # Notebook mode — load_* helpers
@@ -356,7 +377,7 @@ class ToolKit:
             points_list.append(pts)
         return points_list
 
-    def load_lidar_points_xyzi(self, timestamp: int) -> list[np.ndarray]:
+    def load_lidar_points_xyzi(self, timestamp: int, top_only: bool = False) -> list[np.ndarray]:
         """Like load_lidar_points() but returns (N, 4) arrays with intensity.
 
         The fourth column is the normalised intensity from range-image channel 1.
@@ -365,11 +386,20 @@ class ToolKit:
 
         Args:
             timestamp: key.frame_timestamp_micros value.
+            top_only:  Return only the laser with the most returns (the TOP
+                       lidar). That result is cached on disk under ``cache_dir``
+                       because decoding a frame takes about 2 s.
 
         Returns:
             List of (N, 4) float32 arrays [x, y, z, intensity], one per laser.
         """
         self._assert_segment()
+        cache_path = None
+        if top_only and self.cache_dir:
+            cache_path = os.path.join(self.cache_dir, self.split, 'decoded_lidar_top',
+                                      self.context_name, f'{timestamp}.npy')
+            if os.path.isfile(cache_path):
+                return [np.load(cache_path)]
         lidar_df = self._read_frame_rows("lidar", timestamp)
         cal_df   = self._read_cached("lidar_calibration")
 
@@ -382,6 +412,14 @@ class ToolKit:
                 continue
             pts = self._range_image_to_points_xyzi(row, cal_rows.iloc[0])
             points_list.append(pts)
+        if top_only:
+            points_list = [max(points_list, key=len)] if points_list else [np.zeros((0, 4), np.float32)]
+            if cache_path:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                temporary = f'{cache_path}.{os.getpid()}.tmp'
+                with open(temporary, 'wb') as handle:
+                    np.save(handle, points_list[0].astype(np.float32))
+                os.replace(temporary, cache_path)
         return points_list
 
     def load_camera_calibration(self, camera_name: int) -> pd.Series:
@@ -868,13 +906,27 @@ class ToolKit:
     # -----------------------------------------------------------------------
 
     @staticmethod
+    def _azimuths(cols: np.ndarray, width: int, cal_row: pd.Series) -> np.ndarray:
+        """Sensor-frame azimuth of each range-image column.
+
+        Follows Waymo's reference conversion: columns run from +pi down to -pi at
+        pixel centres, minus the sensor's extrinsic yaw, because the extrinsic
+        rotation applied afterwards adds that yaw back.
+        """
+        extrinsic = np.asarray(cal_row[f'{_L_CAL}.extrinsic.transform'], dtype=np.float64).reshape(4, 4)
+        yaw = np.arctan2(extrinsic[1, 0], extrinsic[0, 0])
+        ratios = (width - cols - 0.5) / width
+        return ((ratios * 2.0 - 1.0) * np.pi - yaw).astype(np.float32)
+
+    @staticmethod
     def _get_beam_inclinations(cal_row: pd.Series, height: int) -> np.ndarray:
-        """Return (height,) float32 beam-inclination angles for one laser."""
+        """Return (height,) float32 beam-inclination angles, row 0 = top beam."""
         incl_vals = cal_row[f'{_L_CAL}.beam_inclination.values']
         if (incl_vals is not None
                 and hasattr(incl_vals, '__len__')
                 and len(incl_vals) == height):
-            return np.asarray(incl_vals, dtype=np.float32)
+            # The calibration lists beams bottom-to-top; range-image rows run top-to-bottom.
+            return np.asarray(incl_vals, dtype=np.float32)[::-1].copy()
         incl_min = float(cal_row[f'{_L_CAL}.beam_inclination.min'])
         incl_max = float(cal_row[f'{_L_CAL}.beam_inclination.max'])
         return np.linspace(incl_max, incl_min, height, dtype=np.float32)
@@ -900,7 +952,7 @@ class ToolKit:
             return np.zeros((0, 3), dtype=np.float32)
         height, width, _ = range_image.shape
         inclination = ToolKit._get_beam_inclinations(cal_row, height)[rows]
-        azimuth = np.linspace(np.pi, -np.pi, width, dtype=np.float32)[cols]
+        azimuth = ToolKit._azimuths(cols, width, cal_row)
         selected_ranges = ranges[rows, cols]
         cos_inc = np.cos(inclination)
         xyz_sensor = np.stack([
@@ -928,7 +980,7 @@ class ToolKit:
             return np.zeros((0, 4), dtype=np.float32)
         height, width, _ = range_image.shape
         inclination = ToolKit._get_beam_inclinations(cal_row, height)[rows]
-        azimuth = np.linspace(np.pi, -np.pi, width, dtype=np.float32)[cols]
+        azimuth = ToolKit._azimuths(cols, width, cal_row)
         selected_ranges = ranges[rows, cols]
         cos_inc = np.cos(inclination)
         xyz_sensor = np.stack([
