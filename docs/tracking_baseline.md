@@ -5,7 +5,7 @@ Status: current as of 2026-11-03. Seed 42 only, FRONT camera only. Two detector 
 
 ## Method
 
-- **Detector:** YOLOv8n from the benchmark (protocol v1.2). Detections are cached per frame in the
+- **Detector:** YOLOv8n from the benchmark (protocol v1.3: setting S for the 512 detector, setting L for the 640 x 960 one). Detections are cached per frame in the
   run directory, so tracker settings can change without re-running the model.
 - **Tracker:** `modules/tracking.py`, SORT-style. A constant-velocity Kalman filter per track over
   (cx, cy, w, h), Hungarian matching on IoU, matching only within a class. No appearance features.

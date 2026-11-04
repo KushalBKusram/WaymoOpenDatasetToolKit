@@ -28,7 +28,7 @@ component rows it needs.
 Everything below is seed 42 on one RTX 4080 SUPER unless a spread is shown (the two YOLOv8n
 camera settings were repeated with seeds 43 and 44), using the 10 frozen validation segments
 (FRONT camera, 1,967 frames). These are deliberately
-low-budget baselines (20 of 798 training segments for protocol v1.2, 100 for v1.3),
+low-budget baselines (20 of 798 training segments for setting S, 100 for setting L of protocol v1.3),
 so read them as a comparison harness, not as state of the art. The full protocol,
 including how each number is computed and its limitations, is in
 [docs/benchmark_protocol.md](docs/benchmark_protocol.md).
@@ -65,7 +65,7 @@ low and its cause is not diagnosed, and there is no HOTA.
 Example failure strips (ID switch, association miss, detector miss) are in
 [docs/tracking_baseline.md](docs/tracking_baseline.md#examples); the frames are from the Waymo Open Dataset.
 
-Write-ups: [decision record](docs/decision_record_stage3.md) (what advances and why)
+Write-ups: [findings](docs/findings.md) (what advances, what limits performance, next experiments)
 and [tracking baseline](docs/tracking_baseline.md) (method, metrics, failure replay).
 
 ## Architecture
@@ -409,7 +409,7 @@ WaymoOpenDatasetToolKit/
 │   └── track_replay.py         # Tracking failure attribution and image strips
 ├── docs/
 │   ├── benchmark_protocol.md   # Splits, budgets, metrics, advancement rule, results
-│   ├── decision_record_stage3.md
+│   ├── findings.md             # Decisions, failure modes, next experiments
 │   └── tracking_baseline.md
 └── requirements.txt
 ```
