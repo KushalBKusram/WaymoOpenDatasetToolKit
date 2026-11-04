@@ -3,8 +3,8 @@
 What the benchmark showed, which models advance, what limits performance, and what to try next. The
 numbers, settings (S and L) and metric definitions are in [benchmark_protocol.md](benchmark_protocol.md);
 tracking results are in [tracking_baseline.md](tracking_baseline.md). Unless stated, results are seed 42 on
-the 10 evaluation segments (1,967 FRONT frames) on one RTX 4080 SUPER; YOLOv8n at settings S and L also has
-seeds 43 and 44.
+the 10 evaluation segments (1,967 FRONT frames) on one RTX 4080 SUPER; YOLOv8n at settings S and L and RT-DETR-L at
+setting L also have seeds 43 and 44.
 
 ## Decisions
 
@@ -12,7 +12,9 @@ seeds 43 and 44.
    setting S (mAP 0.120 against 0.084, higher recall at every object size) and clears the +0.02 bar, but its
    p95 latency of 32.7 ms is 3.1x YOLOv8n's 10.4 ms, above the allowed 2x. Under the pre-agreed rule the
    baseline stays and RT-DETR-L is recorded as the accuracy-oriented alternative; the comparison is also
-   confounded by size (RT-DETR-L has about ten times the parameters). Separately, YOLOv8n at setting L
+   confounded by size (RT-DETR-L has about ten times the parameters). At setting L the picture is the same: RT-DETR-L averages mAP
+   0.192 against YOLOv8n's 0.129 and is ahead on every same-seed pairing (the seed ranges overlap), but its p95
+   latency of about 33 ms is about 3x YOLOv8n's 11 ms, so it still does not advance. Separately, YOLOv8n at setting L
    (640 x 960, 100 segments) beats setting S on every seed: mean mAP 0.129 against 0.084, and the worst L seed
    is +0.021 above the best S seed, so the +0.02 bar holds on every pairing, narrowly in the worst, with no
    latency cost.
@@ -35,7 +37,8 @@ seeds 43 and 44.
    background and loose boxes.
 3. **Rare classes.** Cyclists (453 instances) are essentially never detected: setting S gives cyclist AP of
    0.005 or 0, and setting L gave 0.118 on seed 42 but 0.007 and 0.000 on the other seeds, so cyclist detection
-   at L is not established. Pedestrians are found mainly when medium or large.
+   at L is not established for YOLOv8n. RT-DETR-L at L reaches nonzero cyclist AP on all three seeds (0.127,
+   0.021, 0.169), with a very wide spread. Pedestrians are found mainly when medium or large.
 4. **LiDAR 3-D accuracy.** Official vehicle AP (0.048) is about a quarter of the BEV proxy (about 0.2).
    `scripts/lidar_error_analysis.py` (a local analysis of the saved detections, CenterPoint; PointPillars is
    similar) found:
@@ -69,8 +72,8 @@ mean at 0.129 (range 0.108 to 0.157) and show that the 11.5% recall and the cycl
 
 ## Next experiments
 
-- Repeat RT-DETR-L, fusion and the LiDAR models at setting L, and add seeds for the models that have one, so
-  cross-model claims can be made at the larger budget.
+- Repeat fusion and the LiDAR models at setting L, and add seeds for the models that have one, so
+  cross-model claims can be made at the larger budget for every model.
 - LiDAR: score the official metric on ground truth within 50 m for an in-range comparison, and retrain a
   LiDAR variant with extra loss weight on height (centre z and dz); more LiDAR training data is the other
   lever, since the loss had flattened.
@@ -80,6 +83,6 @@ mean at 0.129 (range 0.108 to 0.157) and show that the 11.5% recall and the cycl
 
 ## Caveats
 
-Seeds 43 and 44 exist only for the two YOLOv8n camera settings; everything else is seed 42. Training uses 20
+Seeds 43 and 44 exist only for YOLOv8n at S and L and RT-DETR-L at L; everything else is seed 42. Training uses 20
 or 100 of 798 segments and evaluation 10 of 202. The LiDAR proxy metric is not the official one. Latency was
 measured on one GPU type.

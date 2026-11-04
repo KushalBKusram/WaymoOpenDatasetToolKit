@@ -26,7 +26,7 @@ component rows it needs.
 ## Results at a glance
 
 Everything below is seed 42 on one RTX 4080 SUPER unless a spread is shown (the two YOLOv8n
-camera settings were repeated with seeds 43 and 44), using the 10 frozen validation segments
+camera settings and RT-DETR-L at setting L were repeated with seeds 43 and 44), using the 10 frozen validation segments
 (FRONT camera, 1,967 frames). These are deliberately
 low-budget baselines (20 of 798 training segments for setting S, 100 for setting L of protocol v1.3),
 so read them as a comparison harness, not as state of the art. The full protocol,
@@ -37,6 +37,7 @@ including how each number is computed and its limitations, is in
 |---|---|---|---|
 | YOLOv8n, 512 x 512 | mAP 0.084 (3 seeds: 0.082 to 0.087) | 0.185 / 0.062 / 0.005 | 10 ms |
 | RT-DETR-L, 512 x 512 | mAP 0.120 | 0.234 / 0.119 / 0.008 | 32 ms |
+| RT-DETR-L, 640 x 960, 100 segments (v1.3) | mAP 0.192 mean (3 seeds: 0.149 to 0.225) | seed 42: 0.305 / 0.173 / 0.127 | 33 ms |
 | YOLOv8n + LiDAR channels | mAP 0.081 | 0.172 / 0.071 / 0.000 | 44 ms |
 | **YOLOv8n, 640 x 960, 100 segments (v1.3)** | **mAP 0.129 mean (3 seeds: 0.108 to 0.157)** | seed 42: 0.243 / 0.109 / 0.118 | 11 ms |
 | PointPillars | official L1 AP 0.048 / 0.014 / 0 | | 400 ms |
@@ -47,7 +48,8 @@ including how each number is computed and its limitations, is in
   pedestrian AP improved on all three seeds. The seed-42 run that reached 0.157 is the best
   of three, and its cyclist AP of 0.118 did not repeat (0.007 and 0.000 on the other seeds),
   so cyclist detection is not established.
-  RT-DETR-L is more accurate than YOLOv8n at the same budget but about 3x slower
+  RT-DETR-L is more accurate than YOLOv8n at the same budget (at 640 x 960 it averages 0.192 against
+  0.129, ahead on every same-seed pairing though the seed ranges overlap) but about 3x slower
   (and roughly ten times larger), so it did not replace the baseline.
 - **Fusion:** adding projected LiDAR depth and intensity to YOLOv8n gave no gain.
 - **LiDAR:** under the official Waymo 3-D metric PointPillars and CenterPoint tie;
@@ -57,9 +59,9 @@ including how each number is computed and its limitations, is in
   IDF1 0.327 and MOTA 0.054 (details below). 90 to 97% of missed objects are
   detector misses, so detection, not association, is the main limit.
 
-Known gaps: only the YOLOv8n camera settings have more than one seed (512 spread 0.005 mAP,
-640 x 960 spread 0.049, so differences under about 0.05 at that setting are noise); everything
-else is a single seed. The 640 x 960 setting was only trained for YOLOv8n, the LiDAR official AP is low
+Known gaps: only YOLOv8n at S and L and RT-DETR-L at L have more than one seed (YOLOv8n spread
+0.005 mAP at 512 and 0.049 at 640 x 960, RT-DETR-L 0.076, so differences under about 0.05 to 0.08 at
+640 x 960 are noise); everything else is a single seed. The 640 x 960 setting was not trained for fusion or LiDAR, the LiDAR official AP is low
 (vehicle 0.048; the main causes are height and horizontal localisation error and the 50 m
 range limit, see [findings](docs/findings.md)), and there is no HOTA.
 

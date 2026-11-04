@@ -101,10 +101,10 @@
   <div class="scroll"><table id="resultsTable"></table></div>
   <ul>
     <li><b>Setting L beats S on every seed</b> for both models. YOLOv8n goes from 0.084 to a mean of 0.129 (lowest L seed 0.108, highest S seed 0.087); vehicle and pedestrian AP are higher on all seeds, with no latency cost.</li>
-    <li><b>Seed spread is large at L</b> (about 0.05 mAP for YOLOv8n), so differences under that are noise there. At S the spread is 0.005.</li>
-    <li><b>RT-DETR-L is consistently more accurate</b> than YOLOv8n at the same seed but about three times slower. Under the advancement rule (latency within 2x) it does not replace YOLOv8n.</li>
+    <li><b>Seed spread is large at L</b> (range 0.049 mAP for YOLOv8n, 0.076 for RT-DETR-L), so differences under that are noise there. At S the YOLOv8n spread is 0.005.</li>
+    <li><b>RT-DETR-L is more accurate</b> than YOLOv8n at setting L: mean 0.192 against 0.129, ahead on every same-seed pairing (+0.04 to +0.10), though the seed ranges overlap (its lowest seed, 0.149, is below YOLOv8n's highest, 0.157). It is about three times slower, so under the advancement rule (latency within 2x) it does not replace YOLOv8n.</li>
     <li><b>Adding LiDAR channels to YOLOv8n gives no gain</b> at setting S (0.081 against 0.084).</li>
-    <li><b>Cyclists are not reliably detected.</b> The cyclist AP seen on seed 42 did not repeat on other seeds.</li>
+    <li><b>Cyclists are not reliably detected.</b> YOLOv8n's cyclist AP at L (0.118 on seed 42) did not repeat on the other seeds (0.007, 0.000). RT-DETR-L is nonzero on all three seeds (0.127, 0.021, 0.169) but varies widely.</li>
   </ul>
   <h3>LiDAR models (different metric, setting S, one seed)</h3>
   <div class="scroll"><table>
@@ -128,8 +128,8 @@
     <li><b>Evaluation:</b> the first 10 sorted validation segments (1,967 frames), frozen in a manifest, disjoint from training.</li>
     <li><b>Metrics:</b> COCO mAP for camera and fusion. LiDAR has a BEV axis-aligned proxy and the official Waymo 3-D AP and APH (run from saved detections on Linux with the official wheel).</li>
     <li><b>Advancement rule:</b> a challenger replaces the baseline if it improves mAP by at least 0.02 over YOLOv8n, outside the seed spread, with p95 latency within 2x of the baseline on the same device.</li>
-    <li><b>Seeds:</b> seed 42 for reference runs; the camera models at setting L and YOLOv8n at setting S were repeated with more seeds.</li>
-    <li><b>Known limits:</b> small training budgets; mostly single seeds outside the camera models; camera-only FRONT view; RT-DETR-L has about ten times the parameters of YOLOv8n; fusion and LiDAR were not run at setting L.</li>
+    <li><b>Seeds:</b> seed 42 for reference runs; YOLOv8n at settings S and L and RT-DETR-L at setting L were repeated with seeds 43 and 44.</li>
+    <li><b>Known limits:</b> small training budgets; single seeds outside YOLOv8n and RT-DETR-L; camera-only FRONT view; RT-DETR-L has about ten times the parameters of YOLOv8n; fusion and LiDAR were not run at setting L.</li>
   </ul>
 </section>
 
@@ -142,7 +142,7 @@
     <li><b>LiDAR 3-D accuracy.</b> Height error, horizontal localisation and a 50 m range limit, not heading (see <a href="#lidar">below</a>).</li>
     <li><b>Tracking inherits the detector's misses</b> (see <a href="#tracking">below</a>).</li>
   </ul>
-  <p class="note">Next experiments worth running: RT-DETR-L, fusion and the LiDAR models at more seeds and the larger budget; scoring the official metric within 50 m and a height-weighted LiDAR loss; a shorter track confirmation delay and appearance features to re-link tracks after gaps; more cyclist data.</p>
+  <p class="note">Next experiments worth running: fusion and the LiDAR models at the larger budget and with more seeds; scoring the official metric within 50 m and a height-weighted LiDAR loss; a shorter track confirmation delay and appearance features to re-link tracks after gaps; more cyclist data.</p>
 </section>
 
 <section id="tracking">
@@ -258,7 +258,7 @@ const DATA = {
       "L":   {map: [0.1566, 0.1078, 0.1218], ap: [0.243, 0.109, 0.118], lat: 11}}},
     {name: "RT-DETR-L", runs: {
       "S":   {map: [0.1202],                 ap: [0.234, 0.119, 0.008], lat: 33},
-      "L":   {map: [0.2016, 0.1492],         ap: [0.305, 0.173, 0.127], lat: 35}}},
+      "L":   {map: [0.2016, 0.1492, 0.2249], ap: [0.305, 0.173, 0.127], lat: 33}}},
     {name: "YOLOv8n + LiDAR channels", runs: {
       "S":   {map: [0.081],                  ap: [0.172, 0.071, 0.000], lat: 44}}}
   ],
@@ -287,7 +287,7 @@ const svgEl = (w, h, inner) => `<svg viewBox="0 0 ${w} ${h}" width="100%" role="
   const y = DATA.models[0].runs, r = DATA.models[1].runs;
   const items = [
     [f3(mean(y.S.map)) + " to " + f3(mean(y.L.map)), "YOLOv8n mAP, setting S to L (mean of 3 seeds)"],
-    ["+0.04 mAP", "RT-DETR-L over YOLOv8n at setting L on the same seed, at about 3x the latency"],
+    ["+0.06 mAP", "RT-DETR-L over YOLOv8n at setting L (mean of 3 seeds each), at about 3x the latency"],
     ["90 to 97%", "of missed objects in camera tracking are detector misses, not association"],
     ["22%", "of vehicles lie beyond the 50 m the LiDAR models can see"]
   ];

@@ -6,7 +6,7 @@ camera + LiDAR fusion and LiDAR detection on Waymo Open Dataset v2. Earlier vers
 section 10; this document is the current, complete definition.
 
 Two training settings are defined (section 1): **S** (small, the common budget for comparing different
-models) and **L** (larger input and more data, run so far for YOLOv8n only). Every number in section 8 says
+models) and **L** (larger input and more data, run for YOLOv8n and RT-DETR-L). Every number in section 8 says
 which setting it comes from.
 
 ## 1. Data splits and settings
@@ -65,6 +65,7 @@ schedule; L changes both input and data.
 | `yolov8n_hires.yaml` | YOLOv8n at 640 x 960 | as YOLOv8n | S + resolution |
 | `yolov8n_hires_100.yaml` | YOLOv8n at 640 x 960 | as YOLOv8n | L |
 | `rtdetr.yaml` | RT-DETR-L, new 4-class head | COCO-pretrained | S |
+| `rtdetr_hires_100.yaml` | RT-DETR-L at 640 x 960 | COCO-pretrained | L |
 | `yolo_fusion.yaml` | YOLOv8n with 5 input channels (RGB + projected LiDAR depth and intensity) | as YOLOv8n; extra channels start from the mean RGB filter | S |
 | `pointpillars.yaml` | PointPillars-style center head | from scratch | S |
 | `centerpoint.yaml` | CenterPoint-style pillar encoder + multi-scale BEV backbone | from scratch | S |
@@ -96,8 +97,8 @@ well as architecture.
 ## 6. Seeds, naming and hardware
 
 - Seed 42 for the reference runs. Differences smaller than the seed-to-seed spread must not be claimed as
-  wins. The YOLOv8n runs at settings S and L were repeated with seeds 43 and 44 (section 8); other models have
-  one seed.
+  wins. YOLOv8n at settings S and L and RT-DETR-L at setting L were repeated with seeds 43 and 44 (section 8);
+  other models have one seed.
 - Run names: `<config>-v1.2-s<seed>` (for example `yolov8n-v1.2-s42`). The `v1.2` tag is the name the
   settings were first run under and is kept so existing run directories still match; v1.3 adds settings and
   metrics and does not change settings S. Runs from earlier protocol versions, and LiDAR runs made with the
@@ -123,19 +124,21 @@ Scores are on the 10 evaluation segments; "seeds" is how many seeds were run. Pe
 | YOLOv8n | S + resolution | 1 | mAP 0.119 | 0.227 / 0.119 / 0.010 | 11 |
 | **YOLOv8n** | **L** | 3 | **mAP 0.129 (0.108 to 0.157)** | 0.243 / 0.109 / 0.118 | 11 |
 | RT-DETR-L | S | 1 | mAP 0.120 | 0.234 / 0.119 / 0.008 | 32 |
+| **RT-DETR-L** | **L** | 3 | **mAP 0.192 (0.149 to 0.225)** | 0.305 / 0.173 / 0.127 | 33 |
 | YOLOv8n + LiDAR channels | S | 1 | mAP 0.081 | 0.172 / 0.071 / 0.000 | 44 |
 | PointPillars | S | 1 | BEV proxy 0.088; official L1 AP 0.048 / 0.014 / 0 | proxy 0.196 / 0.067 / 0.000 | 405 |
 | CenterPoint | S | 1 | BEV proxy 0.102; official L1 AP 0.048 / 0.013 / 0 | proxy 0.230 / 0.078 / 0.000 | 397 |
 
-AP50 for seed 42: YOLOv8n S 0.149, S + resolution 0.189, L 0.256; RT-DETR-L 0.209; fusion 0.143. Camera
+AP50 for seed 42: YOLOv8n S 0.149, S + resolution 0.189, L 0.256; RT-DETR-L S 0.209, L 0.338; fusion 0.143. Camera
 latencies are p95 for YOLOv8n and mean for the other camera rows (they differ by under 1 ms for YOLOv8n).
 
-Seed repeats (YOLOv8n, same code, data and schedule):
+Seed repeats (same code, data and schedule per row):
 
-| Setting | mAP seed 42 / 43 / 44 | Mean ± sd | Cyclist AP seed 42 / 43 / 44 |
+| Model, setting | mAP seed 42 / 43 / 44 | Mean ± sd | Cyclist AP seed 42 / 43 / 44 |
 |---|---|---|---|
-| S | 0.0838 / 0.0823 / 0.0867 | 0.084 ± 0.002 | 0.005 / 0.000 / 0.000 |
-| L | 0.1566 / 0.1078 / 0.1218 | 0.129 ± 0.025 | 0.118 / 0.007 / 0.000 |
+| YOLOv8n, S | 0.0838 / 0.0823 / 0.0867 | 0.084 ± 0.002 | 0.005 / 0.000 / 0.000 |
+| YOLOv8n, L | 0.1566 / 0.1078 / 0.1218 | 0.129 ± 0.025 | 0.118 / 0.007 / 0.000 |
+| RT-DETR-L, L | 0.2016 / 0.1492 / 0.2249 | 0.192 ± 0.039 | 0.127 / 0.021 / 0.169 |
 
 Small-object recall (seed 42 only): 4.1% at S, 6.8% at S + resolution, 11.5% at L.
 
@@ -153,8 +156,13 @@ Reading these numbers:
   is single-seed.
 - **Model comparison at S.** RT-DETR-L (0.120) beats YOLOv8n (0.084) by more than the bar but at about 3x the
   latency, so under section 7 it does not advance. Adding LiDAR channels to YOLOv8n gave no measurable gain
-  (0.081 against 0.084). RT-DETR-L, fusion and the LiDAR models have not been trained at L, so no cross-model
-  claim is made at L.
+  (0.081 against 0.084).
+- **Model comparison at L.** RT-DETR-L averages mAP 0.192 against 0.129 for YOLOv8n (+0.063), and is ahead on
+  every same-seed pairing (+0.045, +0.041, +0.103), but the seed ranges overlap (RT-DETR-L's lowest seed, 0.149,
+  is below YOLOv8n's highest, 0.157) and RT-DETR-L's own spread is larger (range 0.076 against 0.049). Its
+  p95 latency averages about 33 ms, about 3x YOLOv8n's 11 ms, so under section 7 it still does not advance.
+  Unlike YOLOv8n, its cyclist AP is nonzero on all three seeds (0.127, 0.021, 0.169) but varies widely. Fusion
+  and the LiDAR models have not been trained at L.
 - **LiDAR.** LiDAR scores are a different metric from camera mAP and cannot be ranked against them. Under the
   official metric (3-D, with heading) PointPillars and CenterPoint are tied (vehicle AP 0.048, pedestrian 0.013
   to 0.014, cyclist 0), so the proxy's ranking of CenterPoint ahead is not supported. The official AP is much
@@ -167,7 +175,8 @@ Reading these numbers:
 
 1. The BEV proxy ignores heading. The official evaluator is integrated for LiDAR only, on a single seed, with
    a 0.2 score cutoff.
-2. Mostly single seed. Only YOLOv8n at S and L has a measured spread (0.005 and 0.049 mAP); other models and
+2. Mostly single seed. Only YOLOv8n at S and L and RT-DETR-L at L have a measured spread (0.005, 0.049 and
+   0.076 mAP); other models and
    all LiDAR results have none.
 3. Error slicing (object size, false-positive type) exists for camera runs only; there is no difficulty or
    distance slicing and LiDAR is not sliced.
@@ -175,7 +184,7 @@ Reading these numbers:
 5. The camera comparison between YOLOv8n and RT-DETR-L is confounded by model size.
 6. Camera-only models use the FRONT view, and at setting S its 512 x 512 squash heavily downsamples small and
    distant objects.
-7. Only the YOLOv8n camera model has been run at setting L.
+7. Only YOLOv8n and RT-DETR-L have been run at setting L; fusion and the LiDAR models have not.
 
 ## 10. Version history
 
@@ -186,4 +195,4 @@ Reading these numbers:
   decoding. This is setting S.
 - **v1.3:** adds the aspect-preserving camera input (`data.img_size: [height, width]`), the 100-segment
   setting L and the S + resolution ablation, the official LiDAR evaluator, camera error analysis, the tracking
-  baseline, and seed repeats for YOLOv8n at S and L. Setting S is unchanged from v1.2.
+  baseline, and seed repeats for YOLOv8n at S and L and RT-DETR-L at L. Setting S is unchanged from v1.2.
