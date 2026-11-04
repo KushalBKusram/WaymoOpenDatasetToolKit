@@ -38,8 +38,19 @@ difference.
    Python 3.12 environment and the packages import; the full pipeline was run on the unpinned install above).
 2. **README recommends Python 3.11, but 3.12 was tested.** Both should work; only 3.12 and 3.10 (the
    official evaluator) have been exercised recently.
-3. **Credentials are required.** Every step above needs read access to the public Waymo bucket through
+3. **The model architecture can depend on the Ultralytics version.** The training machine reported
+   Ultralytics 8.4.198 before the reference runs. A fresh YOLOv8n build in Ultralytics 8.4.115 does not match
+   the trained models: the first conv of its SPPF block has no activation (the trained model has SiLU) and
+   its classification head is narrower (64 against 80 hidden channels). The weights therefore cannot be loaded
+   into a fresh 8.4.115 build without adjustment. Loading a pickled training checkpoint is unaffected, because
+   the saved model object carries its own structure. Exported weights (`scripts/export_weights.py`) record each
+   layer's activation and the loader sizes the head from the saved tensors; the released weights load with
+   an exact match on 8.4.115 (the version installed here) and produce the reference mAP. I did not build the
+   model under 8.4.198 directly, so which version change caused the difference is unconfirmed. To retrain,
+   use the Ultralytics version of the original runs, since a different version may change the starting
+   architecture and the result.
+4. **Credentials are required.** Every step above needs read access to the public Waymo bucket through
    ADC; there is no offline path without downloading the segments first.
-4. **The protocol did not say how to re-evaluate a reference run.** The commands in the table above now
+5. **The protocol did not say how to re-evaluate a reference run.** The commands in the table above now
    serve that purpose, and the protocol's section 8 links here. Tracking commands are also in
    `docs/tracking_baseline.md`.

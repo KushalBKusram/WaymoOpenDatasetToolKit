@@ -63,6 +63,12 @@ else is a single seed. The 640 x 960 setting was only trained for YOLOv8n, the L
 (vehicle 0.048; the main causes are height and horizontal localisation error and the 50 m
 range limit, see [findings](docs/findings.md)), and there is no HOTA.
 
+**Pretrained checkpoint.** The YOLOv8n 640 x 960 (setting L, seed 42) weights are on the
+[models-v1.3 release](https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/releases/tag/models-v1.3) with a
+[model card](docs/model_card.md). They are released under the Waymo non-commercial license, not AGPL (see
+[License and attribution](#license-and-attribution)), and seed 42 is the best of three seeds, so expect about
+0.13 mAP from a retrained model.
+
 Example failure strips (ID switch, association miss, detector miss) are in
 [docs/tracking_baseline.md](docs/tracking_baseline.md#examples); the frames are from the Waymo Open Dataset.
 
@@ -661,6 +667,24 @@ gsutil du -s -ah gs://waymo_open_dataset_v_2_0_0
 
 ---
 
-## License
+## License and attribution
 
-Licensed under [GNU AGPL v3](https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/LICENSE).
+- **Code:** licensed under [GNU AGPL v3](https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/LICENSE).
+- **Model weights:** released under the Waymo Dataset License Agreement for Non-Commercial Use, not AGPL.
+  Any further use or modification of them is subject to that agreement, including its non-commercial
+  restrictions (no use in operating a vehicle, in production systems, or for primarily commercial purposes). A copy
+  of the agreement is attached to the weights release.
+- **Waymo Open Dataset:** this software and the model weights were made using the Waymo Open Dataset, provided
+  by Waymo LLC under the Waymo Dataset License Agreement for Non-Commercial Use, available at
+  [waymo.com/open/terms](https://waymo.com/open/terms), and your access and use of such work are governed by
+  the terms and conditions therein. The dataset and the example frames shown in the docs belong to Waymo.
+
+```bibtex
+@misc{waymo_open_dataset,
+  title = {Waymo Open Dataset: An autonomous driving dataset},
+  website = {\url{https://www.waymo.com/open}},
+  year = {2019-2025}
+}
+```
+
+To cite this toolkit, see [CITATION.cff](CITATION.cff).

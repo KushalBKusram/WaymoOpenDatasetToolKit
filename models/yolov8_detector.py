@@ -83,6 +83,37 @@ class YOLOv8Detector(BaseDetector):
         from ultralytics.nn.tasks import DetectionModel
         return YOLO, DetectionModel, f"yolov8{cfg['model'].get('backbone', 'n')}.yaml"
 
+    def _model_from_state(self, cfg: dict, ckpt: dict, device: torch.device) -> nn.Module:
+        """Rebuild the architecture from the config and load exported weights into it."""
+        _, model_cls, yaml_name = self._model_spec(cfg)
+        num_classes = int(cfg['model'].get('num_classes', 4))
+        names = cfg['model'].get('class_names') or [str(i) for i in range(num_classes)]
+        model = model_cls(yaml_name, ch=self.input_channels, nc=num_classes, verbose=False)
+        # The trained head can be wider than a fresh build for this class count (the COCO-sized
+        # hidden width is kept when the 80-class head is replaced), and the default width differs
+        # between Ultralytics versions, so size the classification branch from the saved tensors.
+        detect = model.model[-1]
+        width = ckpt['state_dict'][f'model.{len(model.model) - 1}.cv3.0.0.conv.weight'].shape[0]
+        if detect.cv3[0][0].conv.weight.shape[0] != width:
+            from ultralytics.nn.modules import Conv
+            detect.cv3 = nn.ModuleList(
+                nn.Sequential(Conv(branch[0].conv.in_channels, width, 3), Conv(width, width, 3),
+                              nn.Conv2d(width, num_classes, 1))
+                for branch in detect.cv3)
+        # Match the activations the weights were trained with, and Ultralytics' BatchNorm settings.
+        modules = dict(model.named_modules())
+        for name, kind in ckpt.get('activations', {}).items():
+            if name in modules and type(modules[name].act).__name__ != kind:
+                modules[name].act = getattr(nn, kind)()
+        for module in model.modules():
+            if isinstance(module, nn.BatchNorm2d):
+                module.eps, module.momentum = 1e-3, 0.03
+        model.load_state_dict(ckpt['state_dict'])
+        model.names = {index: name for index, name in enumerate(names)}
+        model.nc = num_classes
+        print(f'Loaded exported weights ({ckpt.get("source_run") or "unnamed run"})')
+        return model.float().to(device)
+
     # ── BaseDetector ─────────────────────────────────────────────────────────
 
     def build_model(self, cfg: dict, device: torch.device) -> nn.Module:
@@ -108,7 +139,14 @@ class YOLOv8Detector(BaseDetector):
         nn_model = None
         path = Path(weights)
         if path.exists():
-            ckpt = torch.load(weights, map_location=device, weights_only=False)
+            try:
+                # Exported weights (scripts/export_weights.py) hold only tensors and metadata.
+                ckpt = torch.load(weights, map_location=device, weights_only=True)
+            except Exception:
+                ckpt = torch.load(weights, map_location=device, weights_only=False)
+            if isinstance(ckpt, dict) and ckpt.get('format') == 'waymo-toolkit-weights-v1':
+                nn_model = self._model_from_state(cfg, ckpt, device)
+                ckpt = None
             # Toolkit checkpoints carry an explicit segment number. Ultralytics
             # checkpoints also contain a ``model`` module, so checking that field
             # alone would incorrectly retain their half-precision export weights.
