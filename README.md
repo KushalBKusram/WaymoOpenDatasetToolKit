@@ -63,9 +63,9 @@ else is a single seed. The 640 x 960 setting was only trained for YOLOv8n, the L
 (vehicle 0.048; the main causes are height and horizontal localisation error and the 50 m
 range limit, see [findings](docs/findings.md)), and there is no HOTA.
 
-[![Demo clip: camera tracking beside LiDAR bird's-eye view](docs/assets/demo_poster.jpg)](docs/assets/demo_tracking_lidar.mp4)
+[![Demo clip: camera tracking beside LiDAR bird's-eye view](docs/assets/demo_tracking_lidar.gif)](docs/assets/demo_tracking_lidar.mp4)
 
-*Demo clip (6 s, Waymo validation data): camera detection and tracking on the left, LiDAR bird's-eye view with
+*Demo clip (6 s, Waymo validation data; click for the full-quality mp4): camera detection and tracking on the left, LiDAR bird's-eye view with
 ground truth (green) and CenterPoint predictions (orange) on the right. Different models in each panel, not fusion.
 Also on the [project page](https://kushalbkusram.github.io/WaymoOpenDatasetToolKit/). Regenerate with
 `scripts/render_demo.py`.*

@@ -8,7 +8,7 @@ predictions (orange). The two panels are different models on the same timestamps
   python scripts/render_demo.py --suggest
 
   # render one
-  python scripts/render_demo.py --segment <context_name> --start 40 --frames 90 --out demo.mp4
+  python scripts/render_demo.py --segment <context_name> --start 40 --frames 60 --out demo.mp4 --gif demo.gif
 
 Frames are Waymo Open Dataset data: keep clips short (illustration only) and keep the attribution
 that the renderer draws, per https://waymo.com/open/terms.
@@ -164,6 +164,9 @@ def main() -> None:
     parser.add_argument("--lidar-weights", default="runs/centerpoint-v1.2-s42/checkpoints/latest.pt")
     parser.add_argument("--lidar-score", type=float, default=0.4, help="Minimum LiDAR detection score drawn.")
     parser.add_argument("--range", type=float, default=50.0, help="BEV half-width in metres.")
+    parser.add_argument("--gif", type=Path, default=None, help="Also write a GIF (every --gif-step frames, --gif-width wide).")
+    parser.add_argument("--gif-width", type=int, default=960)
+    parser.add_argument("--gif-step", type=int, default=2)
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
     if args.suggest:
@@ -185,6 +188,7 @@ def main() -> None:
     timestamps = sorted(int(t) for t in toolkit.get_timestamps())
     end = args.start + args.frames
     writer = None
+    gif_frames = []
     for index, timestamp in enumerate(timestamps[:end]):
         image = toolkit.load_camera_frame(timestamp, 1)
         detections = [d for d in cam_det.predict(cam_model, image, cam_cfg) if d["score"] >= gate]
@@ -222,9 +226,19 @@ def main() -> None:
             writer, codec = open_writer(args.out, 10.0, (frame.shape[1], frame.shape[0]))
             print(f"writing {args.out} ({frame.shape[1]}x{frame.shape[0]}, codec {codec})", flush=True)
         writer.write(frame)
+        if args.gif and (index - args.start) % args.gif_step == 0:
+            from PIL import Image
+            small = cv2.resize(frame, (args.gif_width, int(frame.shape[0] * args.gif_width / frame.shape[1])),
+                               interpolation=cv2.INTER_AREA)
+            gif_frames.append(Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB)).quantize(
+                colors=128, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE))
         if (index - args.start) % 10 == 0:
             print(f"  frame {index - args.start + 1}/{args.frames}", flush=True)
     writer.release()
+    if args.gif and gif_frames:
+        gif_frames[0].save(args.gif, save_all=True, append_images=gif_frames[1:], duration=100 * args.gif_step,
+                           loop=0, optimize=True, disposal=1)
+        print(f"gif: {args.gif} ({args.gif.stat().st_size / 1e6:.1f} MB, {len(gif_frames)} frames)")
     print(f"done: {args.out} ({args.out.stat().st_size / 1e6:.1f} MB)")
 
 
