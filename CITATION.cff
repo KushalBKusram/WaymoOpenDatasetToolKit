@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this toolkit, please cite it as below. The Waymo Open Dataset has its own citation and license terms (https://waymo.com/open/terms); cite it separately if you use the data."
+title: "Waymo Open Dataset Toolkit"
+type: software
+authors:
+  - family-names: Kusram
+    given-names: Kushal
+repository-code: "https://github.com/KushalBKusram/WaymoOpenDatasetToolKit"
+license: AGPL-3.0-only

@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/ci.yml
+      # Only what the offline tests import. torch, ultralytics and the GCS reader are stubbed in
+      # tests/conftest.py, so none of the training or data dependencies are installed here.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy scipy pandas motmetrics pyyaml opencv-python-headless pytest ruff
+      # Syntax errors and invalid constructs only (E9, F63, F7); no style rules.
+      - name: Static check (ruff, errors only)
+        run: ruff check --select E9,F63,F7 modules models scripts train.py evaluate.py main.py app.py tests
+      - name: Run tests
+        run: python -m pytest -q

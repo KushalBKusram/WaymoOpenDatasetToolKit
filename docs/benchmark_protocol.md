@@ -158,7 +158,9 @@ Reading these numbers:
 - **LiDAR.** LiDAR scores are a different metric from camera mAP and cannot be ranked against them. Under the
   official metric (3-D, with heading) PointPillars and CenterPoint are tied (vehicle AP 0.048, pedestrian 0.013
   to 0.014, cyclist 0), so the proxy's ranking of CenterPoint ahead is not supported. The official AP is much
-  lower than the proxy, probably from height and heading error (not diagnosed). Pedestrian precision for the
+  lower than the proxy mainly because of height and horizontal localisation error (a local analysis found
+  rotated 3-D recall 0.114 against 0.318 in rotated BEV for vehicles), with 22% of vehicles beyond the
+  models' 50 m range; heading affects APH more than AP. See [findings.md](findings.md). Pedestrian precision for the
   LiDAR models is about 8%.
 
 ## 9. Known limitations

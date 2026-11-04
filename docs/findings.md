@@ -36,9 +36,24 @@ seeds 43 and 44.
 3. **Rare classes.** Cyclists (453 instances) are essentially never detected: setting S gives cyclist AP of
    0.005 or 0, and setting L gave 0.118 on seed 42 but 0.007 and 0.000 on the other seeds, so cyclist detection
    at L is not established. Pedestrians are found mainly when medium or large.
-4. **LiDAR 3-D accuracy.** Official vehicle AP (0.048) is about a quarter of the BEV proxy (about 0.2); the
-   gap is probably height and heading error, not yet diagnosed. Pedestrian precision for both LiDAR models is
-   about 8% (tens of thousands of false positives).
+4. **LiDAR 3-D accuracy.** Official vehicle AP (0.048) is about a quarter of the BEV proxy (about 0.2).
+   `scripts/lidar_error_analysis.py` (a local analysis of the saved detections, CenterPoint; PointPillars is
+   similar) found:
+   - Vehicle recall is 0.318 at rotated BEV IoU 0.7 but 0.114 at rotated 3-D IoU 0.7, so most hits are lost
+     in 3-D. On matched pairs, using the ground-truth height and vertical size lifts the share reaching IoU
+     0.7 from 0.21 to 0.58, and using the ground-truth horizontal centre lifts it to 0.45. Height (centre
+     noise about 0.3 m) is the main loss and horizontal localisation second.
+   - Heading is minor for AP: the median vehicle heading error is 3.6 degrees, and 18 to 20% of vehicle
+     headings are flipped by 180 degrees, which affects APH and not AP.
+   - 22% of official-L1 vehicles lie beyond the 50 m the models can see, which caps recall near 78%.
+   - Precision is poor: about 31 vehicle predictions per frame against 20.5 ground-truth vehicles, and only
+     34% of predictions scoring 0.7 or higher are true positives at IoU 0.7. Pedestrian precision is about 8%.
+     Every cyclist prediction scores below 0.3, so cyclist AP is 0.
+   - The dump and evaluator wiring look correct: an independent replica of the official matching gives vehicle
+     AP 0.053 against 0.048 reported, and the replica reproduces the proxy exactly. The replica is not the
+     official evaluator, and APH could not be checked. The cause of the height noise (pillar features have no
+     vertical resolution) is an inference from the architecture, not tested. The 0.2 score cutoff should
+     add at most about 0.001 to 0.003 AP by estimate.
 5. **Tracking inherits the detector's misses.** For the camera tracker, 90 to 97% of missed objects are
    detector misses and most ID switches follow a gap in detection (details in the tracking doc).
 
@@ -56,8 +71,9 @@ mean at 0.129 (range 0.108 to 0.157) and show that the 11.5% recall and the cycl
 
 - Repeat RT-DETR-L, fusion and the LiDAR models at setting L, and add seeds for the models that have one, so
   cross-model claims can be made at the larger budget.
-- Diagnose the LiDAR gap between the proxy and the official metric (height and heading error), and re-run the
-  official evaluator with a lower score cutoff.
+- LiDAR: score the official metric on ground truth within 50 m for an in-range comparison, and retrain a
+  LiDAR variant with extra loss weight on height (centre z and dz); more LiDAR training data is the other
+  lever, since the loss had flattened.
 - Tracking: shorten the confirmation delay for confident, large detections, and test appearance features to
   re-link tracks across gaps (the deferred ReID item).
 - More training data, and class-balanced sampling, for cyclists.

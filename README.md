@@ -59,8 +59,9 @@ including how each number is computed and its limitations, is in
 
 Known gaps: only the YOLOv8n camera settings have more than one seed (512 spread 0.005 mAP,
 640 x 960 spread 0.049, so differences under about 0.05 at that setting are noise); everything
-else is a single seed. The 640 x 960 setting was only trained for YOLOv8n, the LiDAR official AP is very
-low and its cause is not diagnosed, and there is no HOTA.
+else is a single seed. The 640 x 960 setting was only trained for YOLOv8n, the LiDAR official AP is low
+(vehicle 0.048; the main causes are height and horizontal localisation error and the 50 m
+range limit, see [findings](docs/findings.md)), and there is no HOTA.
 
 Example failure strips (ID switch, association miss, detector miss) are in
 [docs/tracking_baseline.md](docs/tracking_baseline.md#examples); the frames are from the Waymo Open Dataset.
