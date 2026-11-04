@@ -63,6 +63,13 @@ else is a single seed. The 640 x 960 setting was only trained for YOLOv8n, the L
 (vehicle 0.048; the main causes are height and horizontal localisation error and the 50 m
 range limit, see [findings](docs/findings.md)), and there is no HOTA.
 
+[![Demo clip: camera tracking beside LiDAR bird's-eye view](docs/assets/demo_poster.jpg)](docs/assets/demo_tracking_lidar.mp4)
+
+*Demo clip (6 s, Waymo validation data): camera detection and tracking on the left, LiDAR bird's-eye view with
+ground truth (green) and CenterPoint predictions (orange) on the right. Different models in each panel, not fusion.
+Also on the [project page](https://kushalbkusram.github.io/WaymoOpenDatasetToolKit/). Regenerate with
+`scripts/render_demo.py`.*
+
 **Pretrained checkpoint.** The YOLOv8n 640 x 960 (setting L, seed 42) weights are on the
 [models-v1.3 release](https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/releases/tag/models-v1.3) with a
 [model card](docs/model_card.md). They are released under the Waymo non-commercial license, not AGPL (see
@@ -413,7 +420,10 @@ WaymoOpenDatasetToolKit/
 │   ├── waymo_official_eval.py  # Official Waymo 3-D metric on dumped LiDAR detections
 │   ├── track_eval.py           # Tracking baseline, oracle checks, MOT metrics
 │   ├── tune_tracker.py         # Tracker tuning on held-out dev segments
-│   └── track_replay.py         # Tracking failure attribution and image strips
+│   ├── track_replay.py         # Tracking failure attribution and image strips
+│   ├── export_weights.py       # Weights-only export for distribution
+│   ├── lidar_error_analysis.py # Why the official LiDAR AP is low
+│   └── render_demo.py          # Side-by-side camera tracking + LiDAR BEV clip
 ├── docs/
 │   ├── benchmark_protocol.md   # Splits, budgets, metrics, advancement rule, results
 │   ├── findings.md             # Decisions, failure modes, next experiments

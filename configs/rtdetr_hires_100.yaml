@@ -1,0 +1,36 @@
+# RT-DETR-L (Ultralytics) at setting L of the benchmark protocol: 640 x 960 input, first 100 training
+# segments, 3 passes. Same budget as configs/yolov8n_hires_100.yaml.
+name: rtdetr_l_hires_100
+task: camera_2d_detection
+
+model:
+  type: RTDETRDetector
+  variant: l           # l | x
+  num_classes: 4
+  class_names: [vehicle, pedestrian, cyclist, sign]
+
+data:
+  split: training
+  cameras: [1]
+  img_size: [640, 960]
+  max_frames_per_seg: null
+  manifest: configs/benchmark_splits_100.json
+  frame_stride: 1
+  num_workers: 3               # parallel batch building; speed only, results are unchanged
+
+train:
+  device: auto
+  seed: 42
+  total_segs: 100
+  passes: 3                    # passes over all training segments (shuffled each pass)
+  epochs_per_seg: 1            # epochs each time a segment is visited
+  batch_size: 4
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 10.0
+  save_every: 5
+
+eval:
+  segs: 10
+  conf: 0.25
+  iou: 0.45

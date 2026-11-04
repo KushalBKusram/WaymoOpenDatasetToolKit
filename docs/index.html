@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Waymo Open Dataset Toolkit</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1f24; --muted:#59636e; --line:#d0d7de; --link:#0969da; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8d96a0; --line:#30363d; --link:#4493f8; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 56px; }
+  h1 { font-size: 1.9rem; margin: 0 0 8px; }
+  p, li { color: var(--fg); }
+  .lead { color: var(--muted); font-size: 1.05rem; }
+  video { width: 100%; border: 1px solid var(--line); border-radius: 8px; margin: 20px 0 6px; background:#000; }
+  .cap { color: var(--muted); font-size: .85rem; margin: 0 0 24px; }
+  a { color: var(--link); }
+  ul { padding-left: 1.2rem; }
+  .notice { border-top: 1px solid var(--line); margin-top: 32px; padding-top: 16px; color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Waymo Open Dataset Toolkit</h1>
+  <p class="lead">A reproducible perception benchmark for Waymo Open Dataset v2: camera, LiDAR and fusion detection
+  under one protocol, an official-metric LiDAR evaluation path, error analysis, and a camera tracking baseline.</p>
+
+  <video controls preload="metadata" poster="assets/demo_poster.jpg">
+    <source src="assets/demo_tracking_lidar.mp4" type="video/mp4">
+    Your browser cannot play this video; <a href="assets/demo_tracking_lidar.mp4">download it</a>.
+  </video>
+  <p class="cap">Left: camera detection and tracking (YOLOv8n 640x960 + SORT). Right: LiDAR bird's-eye view, ground truth (green)
+  against CenterPoint predictions (orange). Different models in each panel; low-budget baselines.</p>
+
+  <ul>
+    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit">Repository and README</a> (results at a glance, quick start)</li>
+    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/docs/benchmark_protocol.md">Benchmark protocol</a> (splits, settings, metrics, reference results)</li>
+    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/docs/findings.md">Findings and next steps</a></li>
+    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/docs/tracking_baseline.md">Tracking baseline and failure analysis</a></li>
+    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/docs/reproducibility.md">Reproducibility notes</a></li>
+    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/releases/tag/models-v1.3">Model weights</a> (non-commercial, Waymo license)</li>
+  </ul>
+
+  <p class="notice">Made using the Waymo Open Dataset, provided by Waymo LLC under the Waymo Dataset License Agreement for
+  Non-Commercial Use, available at <a href="https://waymo.com/open/terms">waymo.com/open/terms</a>, and your access and use of
+  such work are governed by the terms and conditions therein. The clip shows a few seconds of validation data for illustration.
+  Code is AGPL v3; the model weights carry Waymo's non-commercial terms.</p>
+</main>
+</body>
+</html>
