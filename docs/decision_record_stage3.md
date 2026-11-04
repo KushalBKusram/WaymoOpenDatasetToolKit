@@ -1,4 +1,7 @@
-# Stage 3 Decision Record (draft)
+# Stage 3 Decision Record
+
+Status: current as of 2026-11-04. The YOLOv8n camera results were repeated with seeds 43 and 44 (see the
+last section); all other results are seed 42 only.
 
 Evidence: benchmark protocol v1.2, seed 42, 10 validation segments (1,967 FRONT
 frames), single RTX 4080 SUPER. Error analysis from `scripts/error_analysis.py`.
@@ -55,8 +58,11 @@ Two runs of YOLOv8n at 640x960 (aspect ratio kept), same code and schedule apart
 | A: 640x960, same 20 segments, 10 passes | 0.119 | 0.189 | 6.8% / 45% / 76% | 0.010 | 10.7 ms |
 | B: 640x960, 100 segments, 3 passes | 0.157 | 0.256 | 11.5% / 51% / 79% | 0.118 | 11.1 ms |
 
+These are seed 42. The seed repeats below show that B's 0.157 is the best of three seeds.
+
 - **Resolution alone** (A) adds +0.035 mAP at no latency cost.
-- **More data** (B) adds a further +0.038 and makes cyclists detectable (medium recall 0% to 54%).
+- **More data** (B) adds a further +0.038 on seed 42, and on that seed makes cyclists detectable. Both
+  statements weaken with the seed repeats below.
 - B meets all three success criteria: small-object recall above 10%, mAP up by at least 0.02, latency
   within 2x. Under the protocol's advancement rule it replaces the 512x512 baseline for later stages.
 - Costs: B produces more false positives (11.9k vs 6.3k, mostly background and loose boxes), and
@@ -65,7 +71,31 @@ Two runs of YOLOv8n at 640x960 (aspect ratio kept), same code and schedule apart
   798 segments for 3 passes, so it is a different budget from protocol v1.2 and needs its own protocol
   version before it is compared with other models.
 
+## Seed repeats (2026-11-04)
+
+YOLOv8n at 512 and at 640x960 (B), seeds 43 and 44, same code, data and schedule:
+
+| Setting | Seed 42 | Seed 43 | Seed 44 | Mean ± sd |
+|---|---|---|---|---|
+| 512x512, 20 segments, mAP | 0.0838 | 0.0823 | 0.0867 | 0.084 ± 0.002 |
+| 640x960, 100 segments, mAP | 0.1566 | 0.1078 | 0.1218 | 0.129 ± 0.025 |
+| 640x960 vehicle / pedestrian AP | 0.243 / 0.109 | 0.216 / 0.100 | 0.239 / 0.126 | 0.233 / 0.112 |
+| 512 vehicle / pedestrian AP | 0.185 / 0.062 | 0.182 / 0.065 | 0.197 / 0.063 | 0.188 / 0.063 |
+| 640x960 cyclist AP | 0.118 | 0.007 | 0.000 | not stable |
+
+- **The decision stands, with a smaller margin.** Mean gain is +0.044 mAP; the lowest 640x960 seed (0.108)
+  is +0.021 above the highest 512 seed (0.087), so the +0.02 advancement bar is met on every pairing,
+  barely in the worst case. Vehicle and pedestrian AP are higher on all three seeds.
+- **The cyclist result and the 11.5% small-object recall were seed 42.** Cyclist AP was near zero on the
+  other two seeds, so "more data makes cyclists detectable" is not supported. Small-object recall was not
+  re-measured on seeds 43 and 44.
+- **Seed spread at 640x960 is about 10 times larger than at 512** (range 0.049 vs 0.005 mAP), so
+  differences smaller than about 0.05 mAP at that setting should not be claimed. Run A (640x960, 20
+  segments) and the other models were not repeated.
+- The p95 latencies recorded in the seed runs (10 to 14 ms at 640x960, 10 ms at 512) vary with host load;
+  the earlier equal-conditions measurement (about 11 ms) stands.
+
 ## Caveats
 
-Single seed; 20 of 798 training and 10 of 202 validation segments; the
+Seeds 43 and 44 only for the two YOLOv8n camera settings above, seed 42 for everything else; 20 of 798 training and 10 of 202 validation segments; the
 LiDAR metric is a proxy; latency measured on one GPU type only.

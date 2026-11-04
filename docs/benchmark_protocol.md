@@ -94,9 +94,10 @@ comparison reflects model size as well as architecture.
 
 ## 6. Seeds, naming and hardware
 
-- Seed 42 for all reported runs so far. Differences smaller than the seed-to-seed
-  spread must not be claimed as wins; headline comparisons should be repeated
-  with seeds 43 and 44.
+- Seed 42 for the reference runs. Differences smaller than the seed-to-seed
+  spread must not be claimed as wins. The two YOLOv8n camera settings (sections 8 and 10) were
+  repeated with seeds 43 and 44: spread 0.005 mAP at 512 x 512 and 0.049 at 640 x 960. Other
+  models have one seed.
 - Run names: `<config>-v1.2-s<seed>` (for example `yolov8n-v1.2-s42`). Runs from
   earlier protocol versions, and LiDAR runs made with the mis-registered point
   cloud, are kept under names that say so and are never reported.
@@ -139,7 +140,8 @@ Reading these numbers:
 
 1. The BEV proxy ignores heading. The official evaluator is integrated for
    LiDAR only, on a single seed, with a 0.2 score cutoff.
-2. Single seed, so ranking differences below roughly 0.01 mAP are noise.
+2. Mostly single seed. For YOLOv8n the measured spread is 0.005 mAP (512 x 512) and 0.049 mAP
+   (640 x 960, 100 segments); other models and the LiDAR results have no spread measured.
 3. No difficulty, distance or size slicing of the errors yet.
 4. The v1.2 setting uses only 20 of 798 training segments (100 in section 10) and 10 of 202
    validation segments.
@@ -168,7 +170,19 @@ not be mixed with it except as an explicit comparison.
 | 640 x 960, 20 segments, 10 passes | 0.119 | 0.189 | 0.227 / 0.119 / 0.010 | 6.8% | 10.7 ms |
 | 640 x 960, 100 segments, 3 passes | 0.157 | 0.256 | 0.243 / 0.109 / 0.118 | 11.5% | 11.1 ms |
 
-Reading: resolution alone adds +0.035 mAP and more data a further +0.038, both without extra
-latency; cyclists become detectable only with the larger data budget. Both gains exceed the
-+0.02 advancement bar, but with one seed the spread is unmeasured. RT-DETR-L and the fusion
-and LiDAR models have not been trained at this budget, so no cross-model claim is made here.
+Reading (seed 42): resolution alone adds +0.035 mAP and more data a further +0.038, without extra
+latency. These are single-seed figures; see the repeats below. RT-DETR-L and the fusion and LiDAR
+models have not been trained at this budget, so no cross-model claim is made here.
+
+Seed repeats (seeds 42 / 43 / 44, same code, data and schedule):
+
+| Setting | mAP per seed | Mean ± sd | Cyclist AP per seed |
+|---|---|---|---|
+| 512 x 512, 20 segments | 0.0838 / 0.0823 / 0.0867 | 0.084 ± 0.002 | 0.005 / 0.000 / 0.000 |
+| 640 x 960, 100 segments | 0.1566 / 0.1078 / 0.1218 | 0.129 ± 0.025 | 0.118 / 0.007 / 0.000 |
+
+The mean gain from the v1.3 setting is +0.044 mAP, and the lowest 640 x 960 seed is still +0.021 above
+the highest 512 x 512 seed, so the +0.02 bar holds on every pairing, narrowly in the worst. Seed 42 is the
+best 640 x 960 run, and its cyclist AP and small-object recall (11.5%) did not repeat: cyclist AP was
+near zero on the other seeds, and small-object recall was not re-measured. Run `yolov8n_hires.yaml`
+(resolution only, 20 segments) has one seed, so the split between resolution and data is single-seed.

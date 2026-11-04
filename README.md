@@ -25,8 +25,9 @@ component rows it needs.
 
 ## Results at a glance
 
-Everything below is seed 42, a single run, on one RTX 4080 SUPER, using the 10
-frozen validation segments (FRONT camera, 1,967 frames). These are deliberately
+Everything below is seed 42 on one RTX 4080 SUPER unless a spread is shown (the two YOLOv8n
+camera settings were repeated with seeds 43 and 44), using the 10 frozen validation segments
+(FRONT camera, 1,967 frames). These are deliberately
 low-budget baselines (20 of 798 training segments for protocol v1.2, 100 for v1.3),
 so read them as a comparison harness, not as state of the art. The full protocol,
 including how each number is computed and its limitations, is in
@@ -34,15 +35,18 @@ including how each number is computed and its limitations, is in
 
 | Model | Score | Vehicle / Pedestrian / Cyclist | Latency per frame (approx.) |
 |---|---|---|---|
-| YOLOv8n, 512 x 512 | mAP 0.084 | 0.185 / 0.062 / 0.005 | 10 ms |
+| YOLOv8n, 512 x 512 | mAP 0.084 (3 seeds: 0.082 to 0.087) | 0.185 / 0.062 / 0.005 | 10 ms |
 | RT-DETR-L, 512 x 512 | mAP 0.120 | 0.234 / 0.119 / 0.008 | 32 ms |
 | YOLOv8n + LiDAR channels | mAP 0.081 | 0.172 / 0.071 / 0.000 | 44 ms |
-| **YOLOv8n, 640 x 960, 100 segments (v1.3)** | **mAP 0.157** | 0.243 / 0.109 / 0.118 | 11 ms |
+| **YOLOv8n, 640 x 960, 100 segments (v1.3)** | **mAP 0.129 mean (3 seeds: 0.108 to 0.157)** | seed 42: 0.243 / 0.109 / 0.118 | 11 ms |
 | PointPillars | official L1 AP 0.048 / 0.014 / 0 | | 400 ms |
 | CenterPoint | official L1 AP 0.048 / 0.013 / 0 | | 400 ms |
 
-- **Camera:** keeping the aspect ratio at 640 x 960 and training on more segments roughly
-  doubled mAP (0.084 to 0.157) at no latency cost and made cyclists detectable.
+- **Camera:** keeping the aspect ratio at 640 x 960 and training on 100 segments raised mean
+  mAP from 0.084 to 0.129 (every seed above every 512 seed) at no latency cost; vehicle and
+  pedestrian AP improved on all three seeds. The seed-42 run that reached 0.157 is the best
+  of three, and its cyclist AP of 0.118 did not repeat (0.007 and 0.000 on the other seeds),
+  so cyclist detection is not established.
   RT-DETR-L is more accurate than YOLOv8n at the same budget but about 3x slower
   (and roughly ten times larger), so it did not replace the baseline.
 - **Fusion:** adding projected LiDAR depth and intensity to YOLOv8n gave no gain.
@@ -53,8 +57,9 @@ including how each number is computed and its limitations, is in
   IDF1 0.327 and MOTA 0.054 (details below). 90 to 97% of missed objects are
   detector misses, so detection, not association, is the main limit.
 
-Known gaps: single seed everywhere (differences under about 0.01 mAP are noise),
-the 640 x 960 setting was only trained for YOLOv8n, the LiDAR official AP is very
+Known gaps: only the YOLOv8n camera settings have more than one seed (512 spread 0.005 mAP,
+640 x 960 spread 0.049, so differences under about 0.05 at that setting are noise); everything
+else is a single seed. The 640 x 960 setting was only trained for YOLOv8n, the LiDAR official AP is very
 low and its cause is not diagnosed, and there is no HOTA.
 
 Example failure strips (ID switch, association miss, detector miss) are in
@@ -89,11 +94,14 @@ a model module, registry import, and configuration file—not a trainer fork.
 
 ## Environment and authentication
 
-Python 3.11 is the recommended local runtime. Python 3.9 still runs the
-current project but is end-of-life and produces dependency warnings.
+Python 3.12 is the version used for the clean-clone reproducibility audit
+(see [docs/reproducibility.md](docs/reproducibility.md)); Python 3.11 is also
+expected to work. Python 3.9 still runs the current project but is end-of-life
+and produces dependency warnings. `requirements.txt` is unpinned; to get the
+audited package versions, use `pip install -r docs/requirements-tested.txt`.
 
 ```bash
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -213,6 +221,7 @@ train:
   device: auto
   seed: 42
   total_segs: 20
+  passes: 10                 # passes over all training segments
   epochs_per_seg: 2
   batch_size: 4
   lr: 1.0e-4
@@ -435,7 +444,8 @@ timestamps = tk.get_timestamps()        # sorted frame timestamps (µs)
 |---|---|---|
 | `load_camera_frame(ts, cam)` | `(H,W,3)` uint8 BGR array | `camera_image` |
 | `load_camera_boxes(ts, cam)` | `pd.DataFrame` | `camera_box` |
-| `load_lidar_points(ts)` | `list[(N,3) float32]` — one per laser | `lidar` |
+| `load_lidar_points(ts, top_lidar_only=False)` | `list[(N,3) float32]` — one per laser | `lidar` |
+| `load_lidar_points_xyzi(ts, top_only=False)` | `list[(N,4) float32]` — x, y, z, intensity per laser | `lidar` |
 | `load_lidar_boxes(ts)` | `pd.DataFrame` | `lidar_box` |
 | `load_camera_calibration(cam)` | `pd.Series` — intrinsic + extrinsic | `camera_calibration` |
 | `load_projected_lidar_boxes(ts, cam)` | `pd.DataFrame` — 3D boxes in image space | `projected_lidar_box` |
@@ -499,7 +509,7 @@ from modules.waymo_open_dataset import (
 ## `modules/visualize.py` — Visualisation utilities
 
 All `draw_*` functions return an annotated BGR numpy array.
-All `plot_*` functions return a `matplotlib.Figure`.
+`plot_bev` and `plot_ego_trajectory` return a `matplotlib.Figure`; the `*_interactive` functions return a Plotly figure.
 
 ### Functions
 
@@ -510,6 +520,8 @@ All `plot_*` functions return a `matplotlib.Figure`.
 | `draw_keypoints(image, keypoints_df)` | 17-point COCO skeleton on a camera frame |
 | `draw_lidar_on_camera(image, points, calib)` | Depth-coloured LiDAR points projected onto camera |
 | `plot_bev(points_list, boxes_df)` | Bird's-eye-view scatter coloured by height |
+| `plot_bev_interactive(points_list, boxes_df)` | Interactive WebGL bird's-eye view (Plotly, used by the explorer) |
+| `plot_lidar_3d_interactive(points_list, boxes_df)` | Orbitable browser-based 3-D point cloud (Plotly) |
 | `plot_ego_trajectory(poses)` | Plasma-coloured driven path in world coordinates |
 | `build_open3d_scene(points_list, boxes_df)` | Open3D PointCloud + box wireframes (interactive) |
 | `colorize_lidar_by_class(points, seg_labels)` | Open3D PointCloud coloured by semantic class |
@@ -612,6 +624,9 @@ python main.py --split validation --save-dir /tmp/out --segment <context_name>
 | `--list` | — | Print up to 10 segment names and exit |
 | `--segment` | — | Context name to process |
 | `--all` | — | Also extract LiDAR point cloud pickles |
+| `--yolo` | — | Also export YOLO-format labels and JPEG images |
+| `--yolo-dir` | `./yolo_dataset` | Root of the YOLO dataset directory |
+| `--yolo-split` | `train` | YOLO split subfolder: `train` / `val` / `test` |
 
 **Extraction output layout:**
 
@@ -647,4 +662,4 @@ gsutil du -s -ah gs://waymo_open_dataset_v_2_0_0
 
 ## License
 
-Licensed under [GNU AGPL v3](https://github.com/KushalBKusram/WaymoDataToolkit/blob/master/LICENSE).
+Licensed under [GNU AGPL v3](https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/LICENSE).

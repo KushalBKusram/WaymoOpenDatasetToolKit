@@ -1,6 +1,7 @@
 # Camera tracking baseline (Stage 4)
 
-Status: draft. Single seed, single detector checkpoint (`yolov8n-v1.2-s42`), FRONT camera only.
+Status: current as of 2026-11-03. Seed 42 only, FRONT camera only. Two detector checkpoints are scored: YOLOv8n at
+512 x 512 (`yolov8n-v1.2-s42`) and YOLOv8n at 640 x 960 trained on 100 segments (`yolov8n_hires_100-v1.2-s42`).
 
 ## Method
 
@@ -48,8 +49,9 @@ min_hits 3, chosen by the same IDF1 rule) and scored once on the 10 eval segment
 | YOLOv8n 640x960 (B), default tracker | 0.054 | 0.322 | 0.42 / 0.55 | 761 | 0.22 / 0.20 |
 | **YOLOv8n 640x960 (B), tuned** | 0.054 | **0.327** | 0.41 / 0.55 | 650 | 0.25 / 0.19 |
 
-The better detector raises IDF1 (0.307 to 0.327) and lets the tracker follow pedestrians and cyclists,
-but it adds false positives at the 0.25 gate, so MOTA falls (0.166 to 0.054). The selection rule was
+The better detector raises IDF1 (0.307 to 0.327) and lets the tracker follow pedestrians and cyclists
+(this detector is the seed-42 run, the best of three seeds; seeds 43 and 44 reached mAP 0.108 and 0.122
+with near-zero cyclist AP, so the cyclist tracking here should not be expected to repeat), but it adds false positives at the 0.25 gate, so MOTA falls (0.166 to 0.054). The selection rule was
 fixed as IDF1 before tuning, so I kept it; the dev optimum was flat and a higher score gate would
 likely recover MOTA, but picking it after seeing the eval numbers would be tuning on the reported set.
 
@@ -123,7 +125,7 @@ Frames are from the Waymo Open Dataset (validation split) and are shown under th
 ## Limits
 
 Single seed and detector checkpoint; 3 tuning segments; only the FRONT camera; no HOTA (not in
-`motmetrics`); the +0.02 IDF1 gain is within what a second seed could change and has not been repeated.
+`motmetrics`); the tracker was scored on one detector seed per detector; the +0.02 IDF1 gain is within what a second seed could change and has not been repeated.
 
 ## Reproduce
 
@@ -132,6 +134,13 @@ python scripts/track_eval.py --config configs/yolov8n.yaml --run-dir runs/yolov8
 python scripts/tune_tracker.py --config configs/yolov8n.yaml --run-dir runs/yolov8n-v1.2-s42
 python scripts/track_eval.py --config configs/yolov8n.yaml --run-dir runs/yolov8n-v1.2-s42 \
     --score-thresh 0.5 --iou-threshold 0.2 --max-age 40 --min-hits 1 --out runs/yolov8n-v1.2-s42/tracking/tracking_tuned.json
+```
+
+The 640 x 960 results use the same scripts with the hi-res config and run directory:
+
+```bash
+python scripts/track_eval.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42 \
+    --score-thresh 0.25 --iou-threshold 0.2 --max-age 20 --min-hits 3 --out runs/yolov8n_hires_100-v1.2-s42/tracking/tracking_tuned.json
 ```
 
 Failure replay (needs the cached detections from the first command, and the tuning file from the second):

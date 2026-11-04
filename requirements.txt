@@ -1,5 +1,8 @@
 # Waymo Open Dataset v2 — Python dependencies
 #
+# These are unpinned. For the exact versions used in the clean-clone audit, install
+# docs/requirements-tested.txt instead (see docs/reproducibility.md).
+#
 # The official `waymo-open-dataset-tf-*` package has Linux-only wheels and
 # cannot be installed on macOS. We access v2 Parquet files directly with
 # pandas/pyarrow/dask, so the waymo package is NOT required.
