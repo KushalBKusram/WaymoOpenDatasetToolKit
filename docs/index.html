@@ -4,47 +4,364 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Waymo Open Dataset Toolkit</title>
+<meta name="description" content="A reproducible perception benchmark for Waymo Open Dataset v2: camera, LiDAR and fusion detection under one protocol, error analysis, and a camera tracking baseline.">
 <style>
-  :root { --bg:#fff; --fg:#1b1f24; --muted:#59636e; --line:#d0d7de; --link:#0969da; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#8d96a0; --line:#30363d; --link:#4493f8; } }
-  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 system-ui, sans-serif; }
-  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 56px; }
-  h1 { font-size: 1.9rem; margin: 0 0 8px; }
-  p, li { color: var(--fg); }
-  .lead { color: var(--muted); font-size: 1.05rem; }
-  video { width: 100%; border: 1px solid var(--line); border-radius: 8px; margin: 20px 0 6px; background:#000; }
-  .cap { color: var(--muted); font-size: .85rem; margin: 0 0 24px; }
-  a { color: var(--link); }
-  ul { padding-left: 1.2rem; }
-  .notice { border-top: 1px solid var(--line); margin-top: 32px; padding-top: 16px; color: var(--muted); font-size: .85rem; }
+  :root {
+    color-scheme: light;
+    --bg:#fcfcfb; --surface:#ffffff; --ink:#0b0b0b; --ink2:#52514e; --muted:#6b6a66; --line:#e3e2de; --accent:#2a78d6; --code:#f3f2ee;
+    --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --grid:#ececE8; --bar-bg:#f3f2ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --bg:#141413; --surface:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#a09f96; --line:#2f2f2c; --accent:#3987e5; --code:#222220;
+      --s1:#3987e5; --s2:#d95926; --s3:#199e70; --grid:#2a2a28; --bar-bg:#222220;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 64px; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color:var(--accent); }
+  nav { position:sticky; top:0; z-index:10; background:color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter:blur(8px); border-bottom:1px solid var(--line); }
+  nav .in { max-width:1040px; margin:0 auto; padding:10px 16px; display:flex; gap:18px; align-items:center; overflow-x:auto; white-space:nowrap; }
+  nav b { margin-right:auto; font-size:.95rem; }
+  nav a { color:var(--ink2); text-decoration:none; font-size:.9rem; }
+  nav a:hover { color:var(--ink); }
+  main { max-width:1040px; margin:0 auto; padding:0 16px 64px; }
+  section { padding-top:48px; }
+  h1 { font-size:clamp(1.8rem,4vw,2.5rem); line-height:1.15; margin:40px 0 12px; }
+  h2 { font-size:1.55rem; margin:0 0 6px; }
+  h3 { font-size:1.05rem; margin:28px 0 6px; }
+  p { margin:10px 0; }
+  .lead { color:var(--ink2); font-size:1.12rem; max-width:760px; }
+  .sub { color:var(--ink2); max-width:760px; margin-top:0; }
+  .btns { display:flex; flex-wrap:wrap; gap:10px; margin:18px 0 6px; }
+  .btn { display:inline-block; padding:8px 14px; border:1px solid var(--line); border-radius:8px; color:var(--ink); text-decoration:none; background:var(--surface); font-size:.92rem; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  video { width:100%; border:1px solid var(--line); border-radius:10px; background:#000; margin-top:22px; }
+  .cap { color:var(--muted); font-size:.85rem; margin:6px 0 0; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin:26px 0 0; }
+  .tile { background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .tile .n { font-size:1.9rem; font-weight:650; letter-spacing:-.02em; line-height:1.1; }
+  .tile .l { color:var(--ink2); font-size:.88rem; margin-top:6px; }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:16px; margin:16px 0; }
+  .legend { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:.85rem; color:var(--ink2); margin:0 0 8px; }
+  .legend i { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+  svg text { fill:var(--ink2); font:12px system-ui, sans-serif; }
+  svg text.v { fill:var(--ink); font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; margin:10px 0; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--ink2); font-weight:600; font-size:.82rem; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .scroll { overflow-x:auto; }
+  ul { padding-left:1.2rem; } li { margin:5px 0; }
+  code, pre { background:var(--code); border-radius:6px; font:13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { padding:1px 5px; } pre { padding:12px 14px; overflow-x:auto; }
+  .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }
+  figure { margin:14px 0; } figure img { width:100%; border:1px solid var(--line); border-radius:8px; display:block; }
+  figcaption { color:var(--ink2); font-size:.88rem; margin-top:6px; }
+  .tip { position:fixed; pointer-events:none; background:var(--ink); color:var(--bg); padding:6px 9px; border-radius:6px; font-size:.8rem; opacity:0; transition:opacity .08s; z-index:20; max-width:260px; }
+  .note { border-left:3px solid var(--accent); padding:4px 12px; color:var(--ink2); margin:14px 0; }
+  footer { max-width:1040px; margin:0 auto; padding:0 16px 56px; color:var(--muted); font-size:.85rem; border-top:1px solid var(--line); padding-top:20px; }
+  .pill { display:inline-block; font-size:.75rem; padding:1px 8px; border:1px solid var(--line); border-radius:999px; color:var(--ink2); }
 </style>
 </head>
 <body>
-<main>
-  <h1>Waymo Open Dataset Toolkit</h1>
-  <p class="lead">A reproducible perception benchmark for Waymo Open Dataset v2: camera, LiDAR and fusion detection
-  under one protocol, an official-metric LiDAR evaluation path, error analysis, and a camera tracking baseline.</p>
+<nav><div class="in">
+  <b>Waymo Open Dataset Toolkit</b>
+  <a href="#results">Results</a><a href="#protocol">Protocol</a><a href="#findings">Findings</a>
+  <a href="#tracking">Tracking</a><a href="#lidar">LiDAR</a><a href="#reproduce">Reproduce</a>
+  <a href="#weights">Weights</a><a href="#license">License</a>
+</div></nav>
 
+<main>
+<header>
+  <h1>A reproducible perception benchmark for the Waymo Open Dataset</h1>
+  <p class="lead">Camera, LiDAR and camera + LiDAR detection under one protocol, an official-metric LiDAR evaluation path, error analysis, and a camera tracking-by-detection baseline with a failure replay. It is a perception experimentation toolkit, not an autonomy stack.</p>
+  <div class="btns">
+    <a class="btn primary" href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit">Source code</a>
+    <a class="btn" href="#weights">Model weights</a>
+    <a class="btn" href="#reproduce">Reproduce the numbers</a>
+  </div>
   <video controls preload="metadata" poster="assets/demo_poster.jpg">
     <source src="assets/demo_tracking_lidar.mp4" type="video/mp4">
     Your browser cannot play this video; <a href="assets/demo_tracking_lidar.mp4">download it</a>.
   </video>
-  <p class="cap">Left: camera detection and tracking (YOLOv8n 640x960 + SORT). Right: LiDAR bird's-eye view, ground truth (green)
-  against CenterPoint predictions (orange). Different models in each panel; low-budget baselines.</p>
+  <p class="cap">Left: camera detection and tracking (YOLOv8n 640x960 + SORT). Right: LiDAR bird's-eye view, ground truth (green) against CenterPoint predictions (orange). Different models in each panel (not fusion); low-budget baselines. Validation data, 6 seconds, shown for illustration.</p>
+  <div class="tiles" id="tiles"></div>
+</header>
 
+<section id="results">
+  <h2>Results</h2>
+  <p class="sub">Camera detection on the FRONT camera, COCO mAP@[.5:.95] on 10 frozen validation segments (1,967 frames), one RTX 4080 SUPER. Dots are individual seeds, bars are means. Settings are defined in the <a href="#protocol">protocol</a>: S is the small common budget, L has a larger input and more data.</p>
+  <div class="card">
+    <div class="legend" id="legend1"></div>
+    <div id="chart1"></div>
+  </div>
+  <div class="scroll"><table id="resultsTable"></table></div>
   <ul>
-    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit">Repository and README</a> (results at a glance, quick start)</li>
-    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/docs/benchmark_protocol.md">Benchmark protocol</a> (splits, settings, metrics, reference results)</li>
-    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/docs/findings.md">Findings and next steps</a></li>
-    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/docs/tracking_baseline.md">Tracking baseline and failure analysis</a></li>
-    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/blob/master/docs/reproducibility.md">Reproducibility notes</a></li>
-    <li><a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/releases/tag/models-v1.3">Model weights</a> (non-commercial, Waymo license)</li>
+    <li><b>Setting L beats S on every seed</b> for both models. YOLOv8n goes from 0.084 to a mean of 0.129 (lowest L seed 0.108, highest S seed 0.087); vehicle and pedestrian AP are higher on all seeds, with no latency cost.</li>
+    <li><b>Seed spread is large at L</b> (about 0.05 mAP for YOLOv8n), so differences under that are noise there. At S the spread is 0.005.</li>
+    <li><b>RT-DETR-L is consistently more accurate</b> than YOLOv8n at the same seed but about three times slower. Under the advancement rule (latency within 2x) it does not replace YOLOv8n.</li>
+    <li><b>Adding LiDAR channels to YOLOv8n gives no gain</b> at setting S (0.081 against 0.084).</li>
+    <li><b>Cyclists are not reliably detected.</b> The cyclist AP seen on seed 42 did not repeat on other seeds.</li>
   </ul>
+  <h3>LiDAR models (different metric, setting S, one seed)</h3>
+  <div class="scroll"><table>
+    <tr><th>Model</th><th class="num">BEV proxy AP</th><th class="num">Official 3-D L1 AP (vehicle / pedestrian / cyclist)</th><th class="num">Latency</th></tr>
+    <tr><td>PointPillars</td><td class="num">0.088</td><td class="num">0.048 / 0.014 / 0</td><td class="num">405 ms</td></tr>
+    <tr><td>CenterPoint</td><td class="num">0.102</td><td class="num">0.048 / 0.013 / 0</td><td class="num">397 ms</td></tr>
+  </table></div>
+  <p class="sub">LiDAR scores are a different metric from camera mAP and cannot be ranked against it. Under the official Waymo metric the two LiDAR models tie, so the proxy's ranking of CenterPoint ahead is not supported. See <a href="#lidar">why the official AP is low</a>.</p>
+</section>
 
-  <p class="notice">Made using the Waymo Open Dataset, provided by Waymo LLC under the Waymo Dataset License Agreement for
-  Non-Commercial Use, available at <a href="https://waymo.com/open/terms">waymo.com/open/terms</a>, and your access and use of
-  such work are governed by the terms and conditions therein. The clip shows a few seconds of validation data for illustration.
-  Code is AGPL v3; the model weights carry Waymo's non-commercial terms.</p>
+<section id="protocol">
+  <h2>Benchmark protocol (v1.3)</h2>
+  <p class="sub">The protocol fixes how every model is trained and scored, so a difference can be attributed to the model and not to the data, budget or metric.</p>
+  <div class="scroll"><table>
+    <tr><th>Setting</th><th>Training segments</th><th>Camera input</th><th>Schedule</th><th>Run for</th></tr>
+    <tr><td><b>S</b></td><td>first 20 of 798 (2.5%)</td><td>512 x 512, squashed</td><td>10 passes over 20 segments</td><td>all camera models, fusion, LiDAR</td></tr>
+    <tr><td><b>S + resolution</b></td><td>first 20</td><td>640 x 960, aspect kept</td><td>10 passes over 20 segments</td><td>YOLOv8n (ablation)</td></tr>
+    <tr><td><b>L</b></td><td>first 100 of 798 (12.5%)</td><td>640 x 960, aspect kept</td><td>3 passes over 100 segments</td><td>YOLOv8n, RT-DETR-L</td></tr>
+  </table></div>
+  <ul>
+    <li><b>Evaluation:</b> the first 10 sorted validation segments (1,967 frames), frozen in a manifest, disjoint from training.</li>
+    <li><b>Metrics:</b> COCO mAP for camera and fusion. LiDAR has a BEV axis-aligned proxy and the official Waymo 3-D AP and APH (run from saved detections on Linux with the official wheel).</li>
+    <li><b>Advancement rule:</b> a challenger replaces the baseline if it improves mAP by at least 0.02 over YOLOv8n, outside the seed spread, with p95 latency within 2x of the baseline on the same device.</li>
+    <li><b>Seeds:</b> seed 42 for reference runs; the camera models at setting L and YOLOv8n at setting S were repeated with more seeds.</li>
+    <li><b>Known limits:</b> small training budgets; mostly single seeds outside the camera models; camera-only FRONT view; RT-DETR-L has about ten times the parameters of YOLOv8n; fusion and LiDAR were not run at setting L.</li>
+  </ul>
+</section>
+
+<section id="findings">
+  <h2>What limits performance</h2>
+  <ul>
+    <li><b>Small objects.</b> 43% of ground-truth objects are smaller than 32 x 32 pixels in the original frame. At setting S YOLOv8n finds 4% of them and RT-DETR-L 12%; squashing 1920 x 1280 frames to 512 x 512 shrinks them 2.5 to 3.75 times. A larger input helps, which is why setting L was run.</li>
+    <li><b>Loose boxes.</b> At setting S, 65% (YOLOv8n) and 53% (RT-DETR-L) of false positives are localization errors, a box on a real object with IoU between 0.1 and 0.5; another 31% and 37% are background boxes.</li>
+    <li><b>Rare classes.</b> Cyclists (453 instances) are essentially never detected reliably; pedestrians are found mainly when medium or large.</li>
+    <li><b>LiDAR 3-D accuracy.</b> Height error, horizontal localisation and a 50 m range limit, not heading (see <a href="#lidar">below</a>).</li>
+    <li><b>Tracking inherits the detector's misses</b> (see <a href="#tracking">below</a>).</li>
+  </ul>
+  <p class="note">Next experiments worth running: RT-DETR-L, fusion and the LiDAR models at more seeds and the larger budget; scoring the official metric within 50 m and a height-weighted LiDAR loss; a shorter track confirmation delay and appearance features to re-link tracks after gaps; more cyclist data.</p>
+</section>
+
+<section id="tracking">
+  <h2>Camera tracking baseline</h2>
+  <p class="sub">A SORT-style tracker (constant-velocity Kalman filter, Hungarian matching on IoU, class-aware) on YOLOv8n detections, scored with MOT metrics against Waymo's persistent camera object ids on the same 10 evaluation segments. Tracker settings were tuned on three held-out validation segments, never on the evaluation set.</p>
+  <div class="scroll"><table>
+    <tr><th>Detector and tracker</th><th class="num">MOTA</th><th class="num">IDF1</th></tr>
+    <tr><td>YOLOv8n 512 x 512, default tracker</td><td class="num">0.105</td><td class="num">0.286</td></tr>
+    <tr><td>YOLOv8n 512 x 512, tuned tracker</td><td class="num">0.166</td><td class="num">0.307</td></tr>
+    <tr><td>YOLOv8n 640 x 960 (setting L, seed 42), tuned tracker</td><td class="num">0.054</td><td class="num">0.327</td></tr>
+    <tr><td>Box oracle (ground-truth boxes as detections): ceiling of an IoU tracker here</td><td class="num">0.819</td><td class="num">0.679</td></tr>
+  </table></div>
+  <p class="sub">The better detector raises IDF1 but adds false positives, so MOTA falls. The seed-42 detector used here is the best of three seeds, so its cyclist tracking should not be expected to repeat.</p>
+
+  <h3>Where tracking fails</h3>
+  <p class="sub">Every missed ground-truth box is attributed to a cause: no detection overlaps it (detector), or a detection above the score gate overlaps it but no track covers it (association).</p>
+  <div class="card">
+    <div class="legend" id="legend2"></div>
+    <div id="chart2"></div>
+  </div>
+  <p class="sub">Detector misses dominate, and they are small: the median missed box is 22 to 28 pixels on a side. Association misses are larger boxes (40 to 53 px), some of them track start-up lag. Most vehicle ID switches (421 of 653) happen after the object was lost for more than one frame, which points to appearance features or longer memory, not a better matching rule.</p>
+  <div class="grid2">
+    <figure><img src="assets/track_id_switch_after_gap.jpg" alt="Image strip of an ID switch after a gap" loading="lazy"><figcaption><b>ID switch after a gap:</b> a vehicle is lost for several frames and returns under a new track id.</figcaption></figure>
+    <figure><img src="assets/track_association_miss_startup.jpg" alt="Image strip of an association miss at track start" loading="lazy"><figcaption><b>Association miss from start-up lag:</b> the bus is detected from the first frame (thin yellow), but a track appears two frames later (thick blue).</figcaption></figure>
+  </div>
+  <figure><img src="assets/track_detector_miss.jpg" alt="Image strip of a detector miss on a large bus" loading="lazy"><figcaption><b>Detector miss:</b> a large bus passing close on the left, cut by the image edge, has a ground-truth box but no detection and no track. White is ground truth, thick coloured boxes with ids are tracks, thin yellow boxes are raw detections; each strip shows seven consecutive frames.</figcaption></figure>
+</section>
+
+<section id="lidar">
+  <h2>Why the official LiDAR AP is low</h2>
+  <p class="sub">Official vehicle AP (0.048) is about a quarter of the BEV proxy (about 0.2). A local analysis of the saved CenterPoint detections found no pipeline bug; the boxes themselves are the problem.</p>
+  <div class="card">
+    <div id="chart3"></div>
+  </div>
+  <ul>
+    <li><b>Height is the main loss.</b> Recall drops from 0.318 in rotated bird's-eye view to 0.114 in rotated 3-D. On matched pairs, using the ground-truth height and vertical size lifts the share reaching IoU 0.7 from 0.21 to 0.58; the ground-truth horizontal centre lifts it to 0.45.</li>
+    <li><b>Heading is minor for AP.</b> The median vehicle heading error is 3.6 degrees. 18 to 20% of headings are flipped by 180 degrees, which affects APH, not AP.</li>
+    <li><b>Range cap.</b> 22% of vehicles lie beyond the 50 m the models can see, capping recall near 78%.</li>
+    <li><b>Precision is poor:</b> about 31 vehicle predictions per frame against 20.5 ground-truth vehicles, and every cyclist prediction scores below 0.3.</li>
+    <li><b>The wiring looks right:</b> an independent replica of the official matching gives vehicle AP 0.053 against 0.048 reported, and reproduces the proxy exactly. The cause of the height noise (pillar features have no vertical resolution) is an inference, not tested.</li>
+  </ul>
+</section>
+
+<section id="reproduce">
+  <h2>Reproducibility</h2>
+  <p class="sub">Checked from a fresh clone, a new Python 3.12 environment and an empty data cache.</p>
+  <div class="scroll"><table>
+    <tr><th>Step</th><th>Result</th></tr>
+    <tr><td>Install requirements</td><td>Works in 38 s with a warm pip cache.</td></tr>
+    <tr><td>Smoke training</td><td>Completes in about 6 minutes, nearly all first-time data download.</td></tr>
+    <tr><td>Re-evaluate the 640 x 960 checkpoint</td><td>mAP 0.15669 against 0.15661 recorded (Apple GPU against CUDA).</td></tr>
+    <tr><td>Tracking with the tuned settings</td><td>MOTA 0.0537, IDF1 0.3265, 650 vehicle ID switches: identical to the recorded run.</td></tr>
+  </table></div>
+  <p class="sub"><b>Not reproduced:</b> training from scratch, LiDAR training and the official evaluator, the fusion model. The model architecture can depend on the Ultralytics version (the reference runs used 8.4.198), so use the version of the original runs when retraining.</p>
+  <pre><code>git clone https://github.com/KushalBKusram/WaymoOpenDatasetToolKit
+cd WaymoOpenDatasetToolKit
+python3.12 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r docs/requirements-tested.txt
+gcloud auth application-default login     # read access to the public Waymo bucket
+python evaluate.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42</code></pre>
+</section>
+
+<section id="weights">
+  <h2>Model weights</h2>
+  <p class="sub">YOLOv8n at 640 x 960, setting L, seed 42 (mAP 0.157; the best of three seeds, so expect about 0.13 from a retrained model). A weights-only file of 12.7 MB that loads with <code>torch.load(..., weights_only=True)</code>.</p>
+  <div class="btns"><a class="btn primary" href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/releases/tag/models-v1.3">Download from the release</a></div>
+  <p class="cap">SHA-256: <code>af3cd3bea8803b68d8432049a207281d67642cad10a20ba55e988943a1e3ad5f</code></p>
+  <pre><code>import cv2, torch, yaml
+from models import build_detector
+
+cfg = yaml.safe_load(open("configs/yolov8n_hires_100.yaml"))
+cfg["resume_weights"] = "yolov8n_hires_100-v1.2-s42.weights.pt"
+detector = build_detector(cfg)
+model = detector.build_model(cfg, torch.device("cpu")).eval()
+for det in detector.predict(model, cv2.imread("frame.jpg"), cfg):   # BGR image
+    print(det["box"], det["label"], det["score"])</code></pre>
+  <p class="note"><b>Non-commercial.</b> These weights are released under the Waymo Dataset License Agreement for Non-Commercial Use, and any further use or modification is subject to it, including its restrictions on use in vehicle operation, production systems and primarily commercial purposes. A copy of the agreement is attached to the release.</p>
+</section>
+
+<section id="license">
+  <h2>License and attribution</h2>
+  <ul>
+    <li><b>Code:</b> GNU AGPL v3.</li>
+    <li><b>Model weights:</b> Waymo Dataset License Agreement for Non-Commercial Use (also derived from Ultralytics YOLOv8 pretrained weights, AGPL-3.0).</li>
+  </ul>
+  <p>This software and the model weights were made using the Waymo Open Dataset, provided by Waymo LLC under the Waymo Dataset License Agreement for Non-Commercial Use, available at <a href="https://waymo.com/open/terms">waymo.com/open/terms</a>, and your access and use of such work are governed by the terms and conditions therein. The dataset and the example frames shown here belong to Waymo.</p>
+  <pre><code>@misc{waymo_open_dataset,
+  title = {Waymo Open Dataset: An autonomous driving dataset},
+  website = {\url{https://www.waymo.com/open}},
+  year = {2019-2025}
+}</code></pre>
+</section>
 </main>
+
+<footer>
+  Source, full documents and issues: <a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit">github.com/KushalBKusram/WaymoOpenDatasetToolKit</a>.
+  Everything on this page is summarised from the benchmark protocol, findings, tracking and reproducibility documents in the repository.
+</footer>
+<div class="tip" id="tip"></div>
+
+<script>
+/* All numbers on this page come from this block. mAP arrays are per seed (42, 43, 44 in order). */
+const DATA = {
+  settings: [
+    {id: "S",   short: "S",       label: "Setting S (512 x 512, 20 segments)",   color: "var(--s1)"},
+    {id: "S+r", short: "S + res", label: "S + resolution (640 x 960, 20 segments)", color: "var(--s2)"},
+    {id: "L",   short: "L",       label: "Setting L (640 x 960, 100 segments)",   color: "var(--s3)"}
+  ],
+  models: [
+    {name: "YOLOv8n", runs: {
+      "S":   {map: [0.0838, 0.0823, 0.0867], ap: [0.185, 0.062, 0.005], lat: 10},
+      "S+r": {map: [0.119],                  ap: [0.227, 0.119, 0.010], lat: 11},
+      "L":   {map: [0.1566, 0.1078, 0.1218], ap: [0.243, 0.109, 0.118], lat: 11}}},
+    {name: "RT-DETR-L", runs: {
+      "S":   {map: [0.1202],                 ap: [0.234, 0.119, 0.008], lat: 33},
+      "L":   {map: [0.2016, 0.1492],         ap: [0.305, 0.173, 0.127], lat: 35}}},
+    {name: "YOLOv8n + LiDAR channels", runs: {
+      "S":   {map: [0.081],                  ap: [0.172, 0.071, 0.000], lat: 44}}}
+  ],
+  misses: [  /* [class, detector, association] missed ground-truth boxes */
+    ["Vehicle", 13884, 1493], ["Pedestrian", 5612, 201], ["Cyclist", 310, 18]
+  ],
+  funnel: [  /* vehicle recall of 40,387 official-L1 ground-truth boxes, CenterPoint */
+    ["Axis-aligned BEV IoU >= 0.7 (the proxy)", 0.340], ["Rotated BEV IoU >= 0.7", 0.318], ["Rotated 3-D IoU >= 0.7 (official)", 0.114]
+  ]
+};
+
+const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+const f3 = v => v.toFixed(3);
+const tip = document.getElementById("tip");
+function bindTips(root) {
+  root.querySelectorAll("[data-tip]").forEach(el => {
+    el.addEventListener("mousemove", e => { tip.textContent = el.dataset.tip; tip.style.opacity = 1;
+      tip.style.left = Math.min(e.clientX + 14, innerWidth - 270) + "px"; tip.style.top = (e.clientY + 14) + "px"; });
+    el.addEventListener("mouseleave", () => tip.style.opacity = 0);
+  });
+}
+const svgEl = (w, h, inner) => `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" style="display:block">${inner}</svg>`;
+
+/* ---- headline tiles ---- */
+(function tiles() {
+  const y = DATA.models[0].runs, r = DATA.models[1].runs;
+  const items = [
+    [f3(mean(y.S.map)) + " to " + f3(mean(y.L.map)), "YOLOv8n mAP, setting S to L (mean of 3 seeds)"],
+    ["+0.04 mAP", "RT-DETR-L over YOLOv8n at setting L on the same seed, at about 3x the latency"],
+    ["90 to 97%", "of missed objects in camera tracking are detector misses, not association"],
+    ["22%", "of vehicles lie beyond the 50 m the LiDAR models can see"]
+  ];
+  document.getElementById("tiles").innerHTML = items.map(([n, l]) => `<div class="tile"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+})();
+
+/* ---- chart 1: mAP by model and setting, bars = mean, dots = seeds ---- */
+function chart1() {
+  const host = document.getElementById("chart1"), W = Math.max(host.clientWidth, 320), narrow = W < 560;
+  const left = narrow ? 112 : 190, right = 56, top = 8, barH = 15, gap = 4, groupGap = 22, max = 0.25;
+  const x = v => left + (W - left - right) * v / max;
+  let y = top, g = "", ticks = "";
+  DATA.models.forEach(m => {
+    const rows = DATA.settings.filter(s => m.runs[s.id]);
+    const start = y;
+    rows.forEach(s => {
+      const run = m.runs[s.id], mu = mean(run.map);
+      g += `<g><rect x="${left}" y="${y}" width="${x(mu) - left}" height="${barH}" rx="4" fill="${s.color}" data-tip="${m.name}, ${s.label}: mean mAP ${f3(mu)} (${run.map.length} seed${run.map.length > 1 ? "s" : ""}: ${run.map.map(f3).join(", ")}), p95 about ${run.lat} ms"/>`;
+      run.map.forEach(v => g += `<circle cx="${x(v)}" cy="${y + barH / 2}" r="4.5" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.5" data-tip="${m.name} ${s.id}, one seed: ${f3(v)}"/>`);
+      g += `<text class="v" x="${Math.max(...run.map.map(x), x(mu)) + 10}" y="${y + barH - 3}">${f3(mu)}</text></g>`;
+      y += barH + gap;
+    });
+    g += `<text x="${left - 10}" y="${start + (y - gap - start) / 2 + 4}" text-anchor="end" style="fill:var(--ink)">${m.name}</text>`;
+    y += groupGap;
+  });
+  for (let v = 0; v <= max + 1e-9; v += 0.05) ticks += `<line x1="${x(v)}" x2="${x(v)}" y1="0" y2="${y - groupGap}" stroke="var(--grid)"/><text x="${x(v)}" y="${y - groupGap + 16}" text-anchor="middle">${v.toFixed(2)}</text>`;
+  host.innerHTML = svgEl(W, y - groupGap + 24, ticks + g);
+  bindTips(host);
+}
+document.getElementById("legend1").innerHTML = DATA.settings.map(s => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join("") + `<span>Circle = one seed</span>`;
+
+/* ---- results table ---- */
+(function table() {
+  let rows = `<tr><th>Model</th><th>Setting</th><th class="num">Seeds</th><th class="num">mAP, mean (range)</th><th class="num">Vehicle / pedestrian / cyclist AP (seed 42)</th><th class="num">Latency</th></tr>`;
+  DATA.models.forEach(m => DATA.settings.forEach(s => { const r = m.runs[s.id]; if (!r) return;
+    const lo = Math.min(...r.map), hi = Math.max(...r.map);
+    rows += `<tr><td>${m.name}</td><td>${s.short}</td><td class="num">${r.map.length}</td><td class="num">${f3(mean(r.map))}${r.map.length > 1 ? ` (${f3(lo)} to ${f3(hi)})` : ""}</td><td class="num">${r.ap.map(v => v.toFixed(3)).join(" / ")}</td><td class="num">${r.lat} ms</td></tr>`; }));
+  document.getElementById("resultsTable").innerHTML = rows;
+})();
+
+/* ---- chart 2: miss cause, 100% stacked ---- */
+function chart2() {
+  const host = document.getElementById("chart2"), W = Math.max(host.clientWidth, 320), left = W < 560 ? 84 : 110, right = 12, barH = 26, gap = 14, top = 6;
+  const x = f => left + (W - left - right) * f;
+  let g = "";
+  DATA.misses.forEach(([cls, det, assoc], i) => {
+    const total = det + assoc, fd = det / total, y = top + i * (barH + gap);
+    g += `<text x="${left - 10}" y="${y + barH / 2 + 4}" text-anchor="end" style="fill:var(--ink)">${cls}</text>`;
+    g += `<rect x="${left}" y="${y}" width="${x(fd) - left - 1}" height="${barH}" rx="4" fill="var(--s1)" data-tip="${cls}: ${det.toLocaleString()} detector misses of ${total.toLocaleString()} missed boxes (${(fd * 100).toFixed(0)}%)"/>`;
+    g += `<rect x="${x(fd) + 1}" y="${y}" width="${Math.max(x(1) - x(fd) - 1, 2)}" height="${barH}" rx="4" fill="var(--s2)" data-tip="${cls}: ${assoc.toLocaleString()} association misses of ${total.toLocaleString()} missed boxes (${((1 - fd) * 100).toFixed(0)}%)"/>`;
+    g += `<text class="v" x="${left + 8}" y="${y + barH / 2 + 4}" style="fill:#fff">${(fd * 100).toFixed(0)}% detector</text>`;
+    if (1 - fd > 0.08) g += `<text class="v" x="${x(1) - 8}" y="${y + barH / 2 + 4}" text-anchor="end" style="fill:#fff">${((1 - fd) * 100).toFixed(0)}%</text>`;
+  });
+  host.innerHTML = svgEl(W, top + DATA.misses.length * (barH + gap), g);
+  bindTips(host);
+}
+document.getElementById("legend2").innerHTML = `<span><i style="background:var(--s1)"></i>Detector miss (no detection overlaps the box)</span><span><i style="background:var(--s2)"></i>Association miss (detected, but no track)</span>`;
+
+/* ---- chart 3: LiDAR recall funnel ---- */
+function chart3() {
+  const host = document.getElementById("chart3"), W = Math.max(host.clientWidth, 320), left = W < 560 ? 150 : 250, right = 52, barH = 24, gap = 12, top = 6, max = 0.4;
+  const x = v => left + (W - left - right) * v / max;
+  let g = "";
+  DATA.funnel.forEach(([label, v], i) => {
+    const y = top + i * (barH + gap);
+    g += `<text x="${left - 10}" y="${y + barH / 2 + 4}" text-anchor="end" style="fill:var(--ink)">${label}</text>`;
+    g += `<rect x="${left}" y="${y}" width="${x(v) - left}" height="${barH}" rx="4" fill="var(--s1)" data-tip="Vehicle recall ${v.toFixed(3)}"/><text class="v" x="${x(v) + 8}" y="${y + barH / 2 + 4}">${v.toFixed(3)}</text>`;
+  });
+  host.innerHTML = svgEl(W, top + DATA.funnel.length * (barH + gap), g);
+  bindTips(host);
+}
+
+function draw() { chart1(); chart2(); chart3(); }
+draw(); let t; addEventListener("resize", () => { clearTimeout(t); t = setTimeout(draw, 120); });
+</script>
 </body>
 </html>
