@@ -38,7 +38,7 @@ def export(checkpoint: Path, cfg: dict, out: Path, source_run: str = "", seed: i
         "format": FORMAT,
         "state_dict": state,
         "model": {key: cfg["model"][key] for key in ("type", "backbone", "num_classes", "class_names") if key in cfg["model"]},
-        "input_channels": int(model.model[0].conv.weight.shape[1]),
+        "input_channels": int(next(m for m in model.modules() if isinstance(m, torch.nn.Conv2d)).weight.shape[1]),
         "img_size": cfg["data"].get("img_size"),
         # Layer activations differ between Ultralytics versions (for example SPPF.cv1), so record them.
         "activations": {name: type(m.act).__name__ for name, m in model.named_modules()

@@ -93,8 +93,9 @@ class YOLOv8Detector(BaseDetector):
         # hidden width is kept when the 80-class head is replaced), and the default width differs
         # between Ultralytics versions, so size the classification branch from the saved tensors.
         detect = model.model[-1]
-        width = ckpt['state_dict'][f'model.{len(model.model) - 1}.cv3.0.0.conv.weight'].shape[0]
-        if detect.cv3[0][0].conv.weight.shape[0] != width:
+        key = f'model.{len(model.model) - 1}.cv3.0.0.conv.weight'
+        width = ckpt['state_dict'][key].shape[0] if key in ckpt['state_dict'] else None   # YOLO heads only
+        if width is not None and detect.cv3[0][0].conv.weight.shape[0] != width:
             from ultralytics.nn.modules import Conv
             detect.cv3 = nn.ModuleList(
                 nn.Sequential(Conv(branch[0].conv.in_channels, width, 3), Conv(width, width, 3),
