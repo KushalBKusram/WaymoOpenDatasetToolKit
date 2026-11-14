@@ -53,7 +53,9 @@ def match(gts: list[dict], tracks: list[dict], previous: dict, min_iou: float) -
 
 def replay_segment(frames: list, class_names: list[str], settings: dict, match_iou: float) -> tuple[list, dict]:
     """Per-frame records plus event counts for one segment."""
-    tracker = SortTracker(settings["iou_threshold"], settings["max_age"], settings["min_hits"])
+    tracker = SortTracker(settings["iou_threshold"], settings["max_age"], settings["min_hits"],
+                          **{k: settings[k] for k in ("reid_weight", "reid_gate", "reid_thresh", "ema", "lidar_gate", "lidar_weight",
+                                              "lidar_min_points") if k in settings})
     last_track: dict[str, int] = {}
     last_seen: dict[str, int] = {}
     was_matched: dict[str, bool] = {}

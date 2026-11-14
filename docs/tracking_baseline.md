@@ -1,6 +1,6 @@
 # Camera tracking baseline (Stage 4)
 
-Status: current as of 2026-11-03. Seed 42 only, FRONT camera only. Two detector checkpoints are scored: YOLOv8n at
+Status: current as of 2026-11-14. FRONT camera only. The main tables use seed 42; the ReID and LiDAR-gating comparison uses seeds 42, 43 and 44. Two detector checkpoints are scored in the main tables: YOLOv8n at
 512 x 512 (`yolov8n-v1.2-s42`) and YOLOv8n at 640 x 960 trained on 100 segments (`yolov8n_hires_100-v1.2-s42`).
 
 ## Method
@@ -54,6 +54,78 @@ The better detector raises IDF1 (0.307 to 0.327) and lets the tracker follow ped
 with near-zero cyclist AP, so the cyclist tracking here should not be expected to repeat), but it adds false positives at the 0.25 gate, so MOTA falls (0.166 to 0.054). The selection rule was
 fixed as IDF1 before tuning, so I kept it; the dev optimum was flat and a higher score gate would
 likely recover MOTA, but picking it after seeing the eval numbers would be tuning on the reported set.
+
+## HOTA
+
+HOTA (`modules/hota.py`) follows the TrackEval definition: per class, mean over IoU thresholds 0.05 to 0.95 of
+the geometric mean of detection accuracy (DetA) and association accuracy (AssA). It was written from that
+definition and checked with analytic cases (identity gives 1.0; an id swap at the halfway point gives
+AssA 0.5; no detections gives 0), but it was **not cross-checked against the reference TrackEval code**, which
+could not be installed here. Existing MOTA and IDF1 are unchanged. Ground-truth-weighted, 10 evaluation segments:
+
+| Detector and tracker | MOTA | IDF1 | HOTA | DetA | AssA |
+|---|---|---|---|---|---|
+| YOLOv8n 512 x 512, default tracker | 0.104 | 0.286 | 0.277 | 0.201 | 0.405 |
+| YOLOv8n 512 x 512, tuned tracker | 0.166 | 0.307 | 0.287 | 0.187 | 0.461 |
+| YOLOv8n 640 x 960 (L, seed 42), default tracker | 0.054 | 0.322 | 0.315 | 0.246 | 0.431 |
+| YOLOv8n 640 x 960 (L, seed 42), tuned tracker | 0.054 | 0.327 | 0.314 | 0.241 | 0.440 |
+| Box oracle (default tracker) | 0.819 | 0.679 | 0.650 | 0.770 | 0.550 |
+
+Detection quality (DetA, 0.19 to 0.25) is the main limit, as in the failure analysis. The oracle's AssA of 0.55 is
+the association ceiling of an IoU-only tracker on this data.
+
+## Two further upgrades: appearance ReID and LiDAR 3-D gating
+
+Both were tested under one fixed protocol on detections from all three YOLOv8n setting-L seeds (42, 43, 44):
+each tracker's settings are tuned on 3 held-out validation segments (highest ground-truth-weighted IDF1, ties by
+MOTA) and scored once on the 10 evaluation segments. Nothing was changed after seeing evaluation numbers.
+
+- **ReID** (`modules/reid.py`): an ImageNet ResNet-18 embeds each detection crop (128 x 128, 10% padding). Tracks
+  keep a moving average of their embeddings. Association blends cosine distance into the IoU cost, and a second
+  stage re-links tracks that were lost for a few frames to unmatched detections by appearance inside a spatial gate.
+- **LiDAR gating** (`modules/lidar_gate.py`): TOP-LiDAR points are projected into the camera, the central 60% of
+  each box is used (ground points dropped, densest 2.5 m depth window kept) and the median point gives a 3-D
+  position, moved to a world frame with the vehicle pose. Association is rejected (or penalised) when the
+  ground-plane distance to the track's predicted position is too large.
+
+Means over the three seeds (per-seed values in the repository's result files):
+
+| Tracker | IDF1 | HOTA | AssA | MOTA | ID switches | ID switches after a gap |
+|---|---|---|---|---|---|---|
+| Baseline (tuned) | 0.350 | 0.326 | 0.451 | 0.163 | 636 | 384 |
+| + ReID | 0.359 | 0.332 | 0.464 | 0.137 | 574 | 352 |
+| + LiDAR gating | 0.349 | 0.326 | 0.454 | 0.165 | 587 | n/a |
+| + ReID + LiDAR gating | 0.353 | 0.328 | 0.455 | 0.134 | 697 | n/a |
+
+Difference against the baseline, by seed (42 / 43 / 44):
+
+| | IDF1 | HOTA | AssA | MOTA |
+|---|---|---|---|---|
+| + ReID | +0.004 / +0.004 / +0.020 | +0.000 / +0.003 / +0.013 | +0.001 / +0.007 / +0.030 | -0.063 / +0.002 / -0.017 |
+| + LiDAR gating | 0.000 / -0.004 / +0.003 | 0.000 / -0.003 / +0.002 | 0.000 / -0.005 / +0.014 | 0.000 / -0.001 / +0.007 |
+| + ReID + LiDAR gating | -0.002 / +0.004 / +0.008 | -0.002 / +0.003 / +0.006 | -0.007 / +0.007 / +0.011 | -0.067 / +0.002 / -0.022 |
+
+**Reading**
+- **ReID helps a little and consistently in direction.** IDF1, HOTA and AssA improve on all three seeds (mean
+  +0.009, +0.005 and +0.012), and vehicle ID switches after a gap fall on all three seeds (by 3 to 16%; all-class switches after a gap fall from 384 to 352 on average). The gain is small next
+  to the seed-to-seed spread, two of three seeds gain only about +0.004 IDF1, and seed 44 dominates. The gains on the
+  tuning segments were larger than on the evaluation segments, so some of the advantage is selection noise from tuning
+  on only 3 segments. MOTA falls on two seeds because the tuning rule picks settings that add false tracks.
+  Detection accuracy (DetA) does not change, as expected. A plain tracker with the same longer memory (`max_age`
+  up to 80) chose exactly the baseline settings, so longer memory explains none of the gain.
+- **Why ReID is weak here:** the detections are small (median missed box 22 to 28 px), so ImageNet features of tiny crops carry
+  little identity information. A trained ReID head or larger crops are the obvious next step.
+- **LiDAR gating does not help.** Its mean IDF1 (0.349) equals the baseline (0.350), differences are within -0.004 to
+  +0.003, and the tuning rule often switched the gate off. Combining it with ReID is no better than ReID alone.
+- **Why the gate does not help:**
+  - **Coverage:** where objects get confused (small, distant detections) there is often no usable 3-D estimate. Only
+    3 to 6% of small vehicle detections get one, against 51 to 55% of medium and 98 to 99% of large ones.
+  - **Resolution:** the vehicle estimate is coarse for gating. Against the LiDAR boxes, 97.5% of vehicles get an estimate with
+    a median ground-plane error of 2.2 m (the points sit on the visible surface, not the box centre), a 1.2 m spread and
+    a 9.7 m 90th-percentile error from wrong-cluster picks. Pedestrians and cyclists are much better (median about 0.1 m).
+  - **Cause of switches:** most switches follow gaps in detection, which depth consistency cannot fix.
+- **Caveats:** only 3 seeds and 3 tuning segments, no significance test, YOLOv8n detections only (RT-DETR-L was not tried),
+  ground-plane distance only, and the same rolling-shutter approximation as the fusion code.
 
 ## Failure replay (YOLOv8n 640x960, run B, tuned tracker)
 
@@ -124,8 +196,9 @@ Frames are from the Waymo Open Dataset (validation split) and are shown under th
 
 ## Limits
 
-Single seed and detector checkpoint; 3 tuning segments; only the FRONT camera; no HOTA (not in
-`motmetrics`); the tracker was scored on one detector seed per detector; the +0.02 IDF1 gain is within what a second seed could change and has not been repeated.
+3 tuning segments; only the FRONT camera; the main tables use one detector seed per detector (the ReID and LiDAR-gating
+comparison uses three); HOTA is not cross-checked against the reference TrackEval code; the tuned-tracker gain over
+the default is about +0.02 IDF1 and was not repeated on other seeds.
 
 ## Reproduce
 
@@ -141,6 +214,17 @@ The 640 x 960 results use the same scripts with the hi-res config and run direct
 ```bash
 python scripts/track_eval.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42 \
     --score-thresh 0.25 --iou-threshold 0.2 --max-age 20 --min-hits 3 --out runs/yolov8n_hires_100-v1.2-s42/tracking/tracking_tuned.json
+```
+
+The ReID and LiDAR-gating comparisons (they reuse the cached detections of each run; the LiDAR one first needs the
+tuning and evaluation segments' LiDAR and poses, which `prepare_gate_data.py` fetches and decodes):
+
+```bash
+RUNS="runs/yolov8n_hires_100-v1.2-s42 runs/yolov8n_hires_100-v1.2-s43 runs/yolov8n_hires_100-v1.2-s44"
+python scripts/reid_experiment.py --config configs/yolov8n_hires_100.yaml --run-dirs $RUNS
+python scripts/prepare_gate_data.py
+python scripts/lidar_gate_experiment.py --config configs/yolov8n_hires_100.yaml --run-dirs $RUNS
+python scripts/lidar_gate_check.py          # accuracy of the 3-D estimates against LiDAR ground truth
 ```
 
 Failure replay (needs the cached detections from the first command, and the tuning file from the second):

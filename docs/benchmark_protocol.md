@@ -92,7 +92,7 @@ well as architecture.
 - Latency: prediction-only mean, median and p95 from `evaluate.py`, measured with nothing else running on the
   GPU. It is only comparable on the same device. LiDAR latency (about 400 ms) is dominated by CPU voxelisation
   and decoding in Python, not the networks.
-- Tracking metrics (MOTA, IDF1 and others) are defined in [tracking_baseline.md](tracking_baseline.md).
+- Tracking metrics (MOTA, IDF1, HOTA and others) are defined in [tracking_baseline.md](tracking_baseline.md).
 
 ## 6. Seeds, naming and hardware
 

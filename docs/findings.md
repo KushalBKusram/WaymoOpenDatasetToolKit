@@ -58,7 +58,8 @@ setting L also have seeds 43 and 44.
      vertical resolution) is an inference from the architecture, not tested. The 0.2 score cutoff should
      add at most about 0.001 to 0.003 AP by estimate.
 5. **Tracking inherits the detector's misses.** For the camera tracker, 90 to 97% of missed objects are
-   detector misses and most ID switches follow a gap in detection (details in the tracking doc).
+   detector misses and most ID switches follow a gap in detection (details in the tracking doc). Two upgrades were measured on top of the tracker, appearance ReID (small gain) and
+   LiDAR 3-D gating (no gain), because the confused objects are mostly small and far, where neither signal is strong.
 
 ## The experiment behind decision 1
 
@@ -77,8 +78,10 @@ mean at 0.129 (range 0.108 to 0.157) and show that the 11.5% recall and the cycl
 - LiDAR: score the official metric on ground truth within 50 m for an in-range comparison, and retrain a
   LiDAR variant with extra loss weight on height (centre z and dz); more LiDAR training data is the other
   lever, since the loss had flattened.
-- Tracking: shorten the confirmation delay for confident, large detections, and test appearance features to
-  re-link tracks across gaps (the deferred ReID item).
+- Tracking: appearance ReID (a pretrained ResNet-18) gave a small, consistent gain (mean +0.009 IDF1 over three
+  detector seeds) and LiDAR 3-D gating gave none (see the tracking doc). Next: a trained ReID head or larger crops,
+  a shorter confirmation delay for confident, large detections, and a stronger detector, since detection accuracy is
+  the main limit.
 - More training data, and class-balanced sampling, for cyclists.
 
 ## Caveats

@@ -63,7 +63,7 @@ Known gaps: only YOLOv8n at S and L and RT-DETR-L at L have more than one seed (
 0.005 mAP at 512 and 0.049 at 640 x 960, RT-DETR-L 0.076, so differences under about 0.05 to 0.08 at
 640 x 960 are noise); everything else is a single seed. The 640 x 960 setting was not trained for fusion or LiDAR, the LiDAR official AP is low
 (vehicle 0.048; the main causes are height and horizontal localisation error and the 50 m
-range limit, see [findings](docs/findings.md)), and there is no HOTA.
+range limit, see [findings](docs/findings.md)), and HOTA is not cross-checked against the reference TrackEval code.
 
 [![Demo clip: camera tracking beside LiDAR bird's-eye view](docs/assets/demo_tracking_lidar.gif)](docs/assets/demo_tracking_lidar.mp4)
 
@@ -72,11 +72,11 @@ ground truth (green) and CenterPoint predictions (orange) on the right. Differen
 Also on the [project page](https://kushalbkusram.github.io/WaymoOpenDatasetToolKit/). Regenerate with
 `scripts/render_demo.py`.*
 
-**Pretrained checkpoint.** The YOLOv8n 640 x 960 (setting L, seed 42) weights are on the
+**Pretrained checkpoints.** The YOLOv8n and RT-DETR-L 640 x 960 (setting L, seed 42) weights are on the
 [models-v1.3 release](https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/releases/tag/models-v1.3) with a
 [model card](docs/model_card.md). They are released under the Waymo non-commercial license, not AGPL (see
-[License and attribution](#license-and-attribution)), and seed 42 is the best of three seeds, so expect about
-0.13 mAP from a retrained model.
+[License and attribution](#license-and-attribution)), and seed 42 is the best of three YOLOv8n seeds (expect about
+0.13 mAP from a retrained YOLOv8n; RT-DETR-L seed 42 is close to its 0.19 mean).
 
 Example failure strips (ID switch, association miss, detector miss) are in
 [docs/tracking_baseline.md](docs/tracking_baseline.md#examples); the frames are from the Waymo Open Dataset.
@@ -366,17 +366,23 @@ python scripts/tune_tracker.py --config configs/yolov8n_hires_100.yaml --run-dir
 python scripts/track_replay.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42
 ```
 
-| Detector | MOTA | IDF1 |
-|---|---|---|
-| YOLOv8n 512, default tracker | 0.105 | 0.286 |
-| YOLOv8n 512, tuned tracker | 0.166 | 0.307 |
-| YOLOv8n 640 x 960 (100 segments), tuned tracker | 0.054 | 0.327 |
-| Box oracle (ground-truth boxes as detections) | 0.819 | 0.679 |
+| Detector | MOTA | IDF1 | HOTA |
+|---|---|---|---|
+| YOLOv8n 512, default tracker | 0.104 | 0.286 | 0.277 |
+| YOLOv8n 512, tuned tracker | 0.166 | 0.307 | 0.287 |
+| YOLOv8n 640 x 960 (100 segments, seed 42), tuned tracker | 0.054 | 0.327 | 0.314 |
+| Box oracle (ground-truth boxes as detections) | 0.819 | 0.679 | 0.650 |
 
-The better detector raises IDF1 but adds false positives, so MOTA falls. The box
+The better detector raises IDF1 and HOTA but adds false positives, so MOTA falls. The box
 oracle shows the ceiling of an IoU-only tracker on this data. See
 [docs/tracking_baseline.md](docs/tracking_baseline.md) for the method, sanity checks
 and failure analysis.
+
+Two further upgrades were measured on detections from three YOLOv8n seeds, with settings tuned on held-out
+segments: **appearance ReID** (pretrained ResNet-18) improved IDF1 by +0.009 on average (+0.004, +0.004, +0.020),
+HOTA by +0.005 and AssA by +0.012, a small but consistent gain that lowers MOTA on two seeds; **LiDAR 3-D
+gating** gave no gain (mean IDF1 0.349 against 0.350), because the confused objects are mostly small and far, where
+there are too few LiDAR points. Detection accuracy remains the main limit.
 
 ## Project structure
 
@@ -408,6 +414,9 @@ WaymoOpenDatasetToolKit/
 │   ├── segment_cache.py        # On-demand local segment and decoded-frame cache
 │   ├── fusion.py               # Calibration-aware LiDAR-to-camera rasterization
 │   ├── runtime.py              # Device selection and reproducibility helpers
+│   ├── hota.py                 # HOTA / DetA / AssA tracking metric
+│   ├── reid.py                 # Appearance embeddings for tracking
+│   ├── lidar_gate.py           # 3-D position estimates for LiDAR gating
 │   ├── benchmark.py            # Frozen split manifests
 │   ├── tracking.py             # SORT-style Kalman + Hungarian tracker
 │   ├── waymo_open_dataset.py   # ToolKit class — GCS reader + all 12 components
@@ -423,6 +432,8 @@ WaymoOpenDatasetToolKit/
 │   ├── track_eval.py           # Tracking baseline, oracle checks, MOT metrics
 │   ├── tune_tracker.py         # Tracker tuning on held-out dev segments
 │   ├── track_replay.py         # Tracking failure attribution and image strips
+│   ├── reid_experiment.py      # Does appearance ReID help tracking? (3 seeds, fixed protocol)
+│   ├── lidar_gate_experiment.py # Does LiDAR 3-D gating help tracking? (3 seeds, fixed protocol)
 │   ├── export_weights.py       # Weights-only export for distribution
 │   ├── lidar_error_analysis.py # Why the official LiDAR AP is low
 │   └── render_demo.py          # Side-by-side camera tracking + LiDAR BEV clip

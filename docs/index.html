@@ -149,13 +149,13 @@
   <h2>Camera tracking baseline</h2>
   <p class="sub">A SORT-style tracker (constant-velocity Kalman filter, Hungarian matching on IoU, class-aware) on YOLOv8n detections, scored with MOT metrics against Waymo's persistent camera object ids on the same 10 evaluation segments. Tracker settings were tuned on three held-out validation segments, never on the evaluation set.</p>
   <div class="scroll"><table>
-    <tr><th>Detector and tracker</th><th class="num">MOTA</th><th class="num">IDF1</th></tr>
-    <tr><td>YOLOv8n 512 x 512, default tracker</td><td class="num">0.105</td><td class="num">0.286</td></tr>
-    <tr><td>YOLOv8n 512 x 512, tuned tracker</td><td class="num">0.166</td><td class="num">0.307</td></tr>
-    <tr><td>YOLOv8n 640 x 960 (setting L, seed 42), tuned tracker</td><td class="num">0.054</td><td class="num">0.327</td></tr>
-    <tr><td>Box oracle (ground-truth boxes as detections): ceiling of an IoU tracker here</td><td class="num">0.819</td><td class="num">0.679</td></tr>
+    <tr><th>Detector and tracker</th><th class="num">MOTA</th><th class="num">IDF1</th><th class="num">HOTA</th></tr>
+    <tr><td>YOLOv8n 512 x 512, default tracker</td><td class="num">0.104</td><td class="num">0.286</td><td class="num">0.277</td></tr>
+    <tr><td>YOLOv8n 512 x 512, tuned tracker</td><td class="num">0.166</td><td class="num">0.307</td><td class="num">0.287</td></tr>
+    <tr><td>YOLOv8n 640 x 960 (setting L, seed 42), tuned tracker</td><td class="num">0.054</td><td class="num">0.327</td><td class="num">0.314</td></tr>
+    <tr><td>Box oracle (ground-truth boxes as detections): ceiling of an IoU tracker here</td><td class="num">0.819</td><td class="num">0.679</td><td class="num">0.650</td></tr>
   </table></div>
-  <p class="sub">The better detector raises IDF1 but adds false positives, so MOTA falls. The seed-42 detector used here is the best of three seeds, so its cyclist tracking should not be expected to repeat.</p>
+  <p class="sub">The better detector raises IDF1 and HOTA but adds false positives, so MOTA falls. The seed-42 detector used here is the best of three seeds, so its cyclist tracking should not be expected to repeat.</p>
 
   <h3>Where tracking fails</h3>
   <p class="sub">Every missed ground-truth box is attributed to a cause: no detection overlaps it (detector), or a detection above the score gate overlaps it but no track covers it (association).</p>
@@ -169,6 +169,19 @@
     <figure><img src="assets/track_association_miss_startup.jpg" alt="Image strip of an association miss at track start" loading="lazy"><figcaption><b>Association miss from start-up lag:</b> the bus is detected from the first frame (thin yellow), but a track appears two frames later (thick blue).</figcaption></figure>
   </div>
   <figure><img src="assets/track_detector_miss.jpg" alt="Image strip of a detector miss on a large bus" loading="lazy"><figcaption><b>Detector miss:</b> a large bus passing close on the left, cut by the image edge, has a ground-truth box but no detection and no track. White is ground truth, thick coloured boxes with ids are tracks, thin yellow boxes are raw detections; each strip shows seven consecutive frames.</figcaption></figure>
+
+  <h3>Two further upgrades: appearance ReID and LiDAR 3-D gating</h3>
+  <p class="sub">Both were tested on detections from all three YOLOv8n setting-L seeds, with settings tuned on 3 held-out segments and scored once on the 10 evaluation segments. <b>ReID</b> embeds each detection crop with a pretrained ResNet-18, blends appearance into the association cost, and re-links tracks lost for a few frames. <b>LiDAR gating</b> projects LiDAR points into each box for a 3-D position and rejects associations that are too far apart in the world frame.</p>
+  <div class="card">
+    <div class="legend"><span><i style="background:var(--s1)"></i>Change in IDF1 against the baseline tracker, one dot per detector seed (42, 43, 44); diamond = mean</span></div>
+    <div id="chart4"></div>
+  </div>
+  <div class="scroll"><table id="upgradeTable"></table></div>
+  <ul>
+    <li><b>ReID helps a little and consistently in direction:</b> IDF1, HOTA and AssA improve on all three seeds (mean +0.009, +0.005, +0.012) and vehicle ID switches after a gap fall on all three. The gain is small next to the seed spread, seed 44 dominates, and MOTA falls on two seeds. A generic ImageNet network on crops of 22 to 28 pixels carries little identity information, so a trained ReID head or larger crops are the next step.</li>
+    <li><b>LiDAR gating does not help</b> (mean IDF1 0.349 against 0.350). The confused objects are mostly small and far: only 3 to 6% of small vehicle detections get a usable 3-D position, and the vehicle position estimate is coarse (median 2.2 m error, mostly a bias towards the sensor). Most ID switches follow gaps in detection, which depth consistency cannot fix.</li>
+    <li>HOTA is implemented from the TrackEval definition and tested analytically, but not cross-checked against the reference code. Only 3 seeds and 3 tuning segments, so there is no significance test.</li>
+  </ul>
 </section>
 
 <section id="lidar">
@@ -207,14 +220,14 @@ python evaluate.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8
 
 <section id="weights">
   <h2>Model weights</h2>
-  <p class="sub">YOLOv8n at 640 x 960, setting L, seed 42 (mAP 0.157; the best of three seeds, so expect about 0.13 from a retrained model). A weights-only file of 12.7 MB that loads with <code>torch.load(..., weights_only=True)</code>.</p>
+  <p class="sub">YOLOv8n (12.7 MB, mAP 0.157; the best of three seeds, so expect about 0.13 from a retrained model) and RT-DETR-L (131.8 MB, mAP 0.202; close to its 0.192 mean), both at 640 x 960, setting L, seed 42. Weights-only files that load with <code>torch.load(..., weights_only=True)</code>.</p>
   <div class="btns"><a class="btn primary" href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit/releases/tag/models-v1.3">Download from the release</a></div>
-  <p class="cap">SHA-256: <code>af3cd3bea8803b68d8432049a207281d67642cad10a20ba55e988943a1e3ad5f</code></p>
+  <p class="cap">SHA-256 (YOLOv8n): <code>af3cd3bea8803b68d8432049a207281d67642cad10a20ba55e988943a1e3ad5f</code><br>SHA-256 (RT-DETR-L): <code>ea1283784d327bc833f287c45d1aa92bbdfc43f4fe2bd38e380410085ee38451</code></p>
   <pre><code>import cv2, torch, yaml
 from models import build_detector
 
-cfg = yaml.safe_load(open("configs/yolov8n_hires_100.yaml"))
-cfg["resume_weights"] = "yolov8n_hires_100-v1.2-s42.weights.pt"
+cfg = yaml.safe_load(open("configs/yolov8n_hires_100.yaml"))        # or configs/rtdetr_hires_100.yaml
+cfg["resume_weights"] = "yolov8n_hires_100-v1.2-s42.weights.pt"     # or rtdetr_l_hires_100-v1.2-s42.weights.pt
 detector = build_detector(cfg)
 model = detector.build_model(cfg, torch.device("cpu")).eval()
 for det in detector.predict(model, cv2.imread("frame.jpg"), cfg):   # BGR image
@@ -265,6 +278,12 @@ const DATA = {
   misses: [  /* [class, detector, association] missed ground-truth boxes */
     ["Vehicle", 13884, 1493], ["Pedestrian", 5612, 201], ["Cyclist", 310, 18]
   ],
+  upgrades: {   /* per-seed IDF1 / HOTA / AssA / MOTA and mean ID switches, seeds 42, 43, 44 */
+    baseline:  {idf1: [0.3265, 0.3653, 0.3568], hota: [0.3140, 0.3348, 0.3296], assa: [0.4395, 0.4671, 0.4477], mota: [0.0537, 0.2111, 0.2245], sw: 636},
+    reid:      {idf1: [0.3302, 0.3694, 0.3768], hota: [0.3143, 0.3379, 0.3422], assa: [0.4400, 0.4742, 0.4772], mota: [-0.0094, 0.2133, 0.2074], sw: 574},
+    lidar:     {idf1: [0.3265, 0.3615, 0.3602], hota: [0.3140, 0.3322, 0.3319], assa: [0.4395, 0.4619, 0.4618], mota: [0.0537, 0.2099, 0.2316], sw: 587},
+    reid_lidar:{idf1: [0.3244, 0.3694, 0.3650], hota: [0.3119, 0.3379, 0.3354], assa: [0.4329, 0.4742, 0.4589], mota: [-0.0133, 0.2133, 0.2026], sw: 697}
+  },
   funnel: [  /* vehicle recall of 40,387 official-L1 ground-truth boxes, CenterPoint */
     ["Axis-aligned BEV IoU >= 0.7 (the proxy)", 0.340], ["Rotated BEV IoU >= 0.7", 0.318], ["Rotated 3-D IoU >= 0.7 (official)", 0.114]
   ]
@@ -360,7 +379,31 @@ function chart3() {
   bindTips(host);
 }
 
-function draw() { chart1(); chart2(); chart3(); }
+/* ---- chart 4: IDF1 change against the baseline, per seed ---- */
+function chart4() {
+  const host = document.getElementById("chart4"), W = Math.max(host.clientWidth, 320), left = W < 560 ? 120 : 190, right = 24, rowH = 34, top = 6, lo = -0.01, hi = 0.03;
+  const x = v => left + (W - left - right) * (v - lo) / (hi - lo);
+  const rows = [["ReID", "reid"], ["LiDAR gating", "lidar"], ["ReID + LiDAR", "reid_lidar"]];
+  const base = DATA.upgrades.baseline.idf1, h = top + rows.length * rowH + 26;
+  let g = "";
+  for (let v = lo; v <= hi + 1e-9; v += 0.01) g += `<line x1="${x(v)}" x2="${x(v)}" y1="0" y2="${h - 26}" stroke="${Math.abs(v) < 1e-9 ? "var(--ink2)" : "var(--grid)"}"/><text x="${x(v)}" y="${h - 8}" text-anchor="middle">${v > 1e-9 ? "+" : ""}${v.toFixed(2)}</text>`;
+  rows.forEach(([name, key], i) => {
+    const d = DATA.upgrades[key].idf1.map((v, j) => v - base[j]), m = mean(d), cy = top + i * rowH + rowH / 2;
+    g += `<text x="${left - 10}" y="${cy + 4}" text-anchor="end" style="fill:var(--ink)">${name}</text>`;
+    d.forEach((v, j) => g += `<circle cx="${x(v)}" cy="${cy}" r="5" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.5" data-tip="${name}, seed ${42 + j}: IDF1 ${v >= 0 ? "+" : ""}${v.toFixed(3)} against the baseline"/>`);
+    g += `<path d="M${x(m)} ${cy - 8} l7 8 l-7 8 l-7 -8 z" fill="var(--s1)" data-tip="${name}, mean over 3 seeds: ${m >= 0 ? "+" : ""}${m.toFixed(3)}"/>`;
+  });
+  host.innerHTML = svgEl(W, h, g);
+  bindTips(host);
+}
+(function upgradeTable() {
+  const names = [["Baseline (tuned)", "baseline"], ["+ ReID", "reid"], ["+ LiDAR gating", "lidar"], ["+ ReID + LiDAR gating", "reid_lidar"]];
+  let rows = `<tr><th>Tracker</th><th class="num">IDF1</th><th class="num">HOTA</th><th class="num">AssA</th><th class="num">MOTA</th><th class="num">ID switches</th></tr>`;
+  names.forEach(([n, k]) => { const u = DATA.upgrades[k]; rows += `<tr><td>${n}</td><td class="num">${f3(mean(u.idf1))}</td><td class="num">${f3(mean(u.hota))}</td><td class="num">${f3(mean(u.assa))}</td><td class="num">${f3(mean(u.mota))}</td><td class="num">${u.sw}</td></tr>`; });
+  document.getElementById("upgradeTable").innerHTML = rows;
+})();
+
+function draw() { chart1(); chart2(); chart3(); chart4(); }
 draw(); let t; addEventListener("resize", () => { clearTimeout(t); t = setTimeout(draw, 120); });
 </script>
 </body>

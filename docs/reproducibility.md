@@ -12,6 +12,7 @@ virtual environment and no local `.waymo_cache/`. Machine: Apple Silicon Mac, Py
 | Install | `pip install -r requirements.txt` | Works, 38 s with a warm pip cache. Resolved versions are in `docs/requirements-tested.txt`. |
 | Smoke training | `python train.py --config configs/yolov8n.yaml --smoke-test --max-frames 5 --drive-dir ./runs/smoke` | Completes (about 6 min, almost all of it first-time data download). Pretrained weights are fetched automatically. |
 | Evaluation of a trained model | `python evaluate.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42` | mAP 0.15669 vs 0.15661 recorded (CUDA); AP50 0.2564 vs 0.2563; AP75 0.1640 vs 0.1640; 1,967 frames. |
+| Evaluation of RT-DETR-L (setting L, seed 42) | `PYTORCH_ENABLE_MPS_FALLBACK=1 python evaluate.py --config configs/rtdetr_hires_100.yaml --run-dir runs/rtdetr_hires_100-v1.2-s42` | mAP 0.1927 vs 0.2016 recorded (CUDA, Ultralytics 8.4.198). The original training checkpoint scores the same 0.1927 on this machine and the exported weights match it exactly, so the 0.009 difference comes from the evaluation environment, not the export. |
 | Tracking | `python scripts/track_eval.py --config configs/yolov8n_hires_100.yaml --run-dir runs/yolov8n_hires_100-v1.2-s42 --score-thresh 0.25 --iou-threshold 0.2 --max-age 20 --min-hits 3` | MOTA 0.0537, IDF1 0.3265, 650 vehicle ID switches: identical to the recorded run. |
 
 The evaluation used the original checkpoint copied into the clean clone, so it checks the evaluation and
