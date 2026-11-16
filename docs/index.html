@@ -3,32 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700|Roboto+Slab:300,400,500">
+<link rel="stylesheet" href="https://kushalbkusram.github.io/assets/css/project-theme.css">
+<script src="https://kushalbkusram.github.io/assets/js/project-theme.js"></script>
 <title>Waymo Open Dataset Toolkit</title>
 <meta name="description" content="A reproducible perception benchmark for Waymo Open Dataset v2: camera, LiDAR and fusion detection under one protocol, error analysis, and a camera tracking baseline.">
 <style>
   :root {
-    color-scheme: light;
-    --bg:#fcfcfb; --surface:#ffffff; --ink:#0b0b0b; --ink2:#52514e; --muted:#6b6a66; --line:#e3e2de; --accent:#2a78d6; --code:#f3f2ee;
+    --bg:var(--g-bg); --surface:var(--g-card); --ink:var(--g-fg); --ink2:var(--g-muted); --muted:var(--g-muted); --line:var(--g-line); --accent:var(--g-accent); --code:var(--g-code);
     --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --grid:#ececE8; --bar-bg:#f3f2ee;
   }
+  :root:where([data-theme="dark"]) { --s1:#3987e5; --s2:#d95926; --s3:#199e70; --grid:#2a2a28; --bar-bg:#222220; }
   @media (prefers-color-scheme: dark) {
-    :root:where(:not([data-theme="light"])) {
-      color-scheme: dark;
-      --bg:#141413; --surface:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#a09f96; --line:#2f2f2c; --accent:#3987e5; --code:#222220;
-      --s1:#3987e5; --s2:#d95926; --s3:#199e70; --grid:#2a2a28; --bar-bg:#222220;
-    }
+    :root:where(:not([data-theme="light"])) { --s1:#3987e5; --s2:#d95926; --s3:#199e70; --grid:#2a2a28; --bar-bg:#222220; }
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; scroll-padding-top: 64px; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:300 16px/1.6 var(--g-font); }
   a { color:var(--accent); }
   nav { position:sticky; top:0; z-index:10; background:color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter:blur(8px); border-bottom:1px solid var(--line); }
   nav .in { max-width:1040px; margin:0 auto; padding:10px 16px; display:flex; gap:18px; align-items:center; overflow-x:auto; white-space:nowrap; }
-  nav b { margin-right:auto; font-size:.95rem; }
-  nav a { color:var(--ink2); text-decoration:none; font-size:.9rem; }
+    nav a { color:var(--ink2); text-decoration:none; font-size:.9rem; }
   nav a:hover { color:var(--ink); }
   main { max-width:1040px; margin:0 auto; padding:0 16px 64px; }
   section { padding-top:48px; }
+  h1, h2, h3 { font-family:var(--g-font-head); font-weight:400; }
   h1 { font-size:clamp(1.8rem,4vw,2.5rem); line-height:1.15; margin:40px 0 12px; }
   h2 { font-size:1.55rem; margin:0 0 6px; }
   h3 { font-size:1.05rem; margin:28px 0 6px; }
@@ -67,9 +66,16 @@
 </style>
 </head>
 <body>
+<div class="site-bar"><div class="site-bar__in">
+  <a class="site-bar__home" href="https://kushalbkusram.github.io/">&larr; Kushal Kusram</a>
+  <a class="site-bar__crumb" href="https://kushalbkusram.github.io/projects/">projects</a>
+  <span class="site-bar__title">Waymo Open Dataset Toolkit</span>
+  <span class="site-bar__spacer"></span>
+  <a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit">GitHub</a>
+  <button class="site-bar__theme" type="button" aria-label="Toggle dark mode"></button>
+</div></div>
 <nav><div class="in">
-  <a href="https://kushalbkusram.github.io/">&larr; Kushal Kusram</a>
-  <b>Waymo Open Dataset Toolkit</b>
+  
   <a href="#results">Results</a><a href="#protocol">Protocol</a><a href="#findings">Findings</a>
   <a href="#tracking">Tracking</a><a href="#lidar">LiDAR</a><a href="#reproduce">Reproduce</a>
   <a href="#weights">Weights</a><a href="#license">License</a>
@@ -251,10 +257,12 @@ for det in detector.predict(model, cv2.imread("frame.jpg"), cfg):   # BGR image
 </section>
 </main>
 
-<footer>
-  Source, full documents and issues: <a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit">github.com/KushalBKusram/WaymoOpenDatasetToolKit</a>.
+<footer style="max-width:1040px;margin:0 auto;padding:0 16px;color:var(--muted);font-size:.85rem">
   Everything on this page is summarised from the benchmark protocol, findings, tracking and reproducibility documents in the repository.
 </footer>
+<footer class="site-foot"><div class="wrapin">
+  <a href="https://kushalbkusram.github.io/">&larr; Back to kushalbkusram.github.io</a> &middot; <a href="https://kushalbkusram.github.io/projects/">All projects</a> &middot; <a href="https://github.com/KushalBKusram/WaymoOpenDatasetToolKit">Source on GitHub</a>
+</div></footer>
 <div class="tip" id="tip"></div>
 
 <script>
